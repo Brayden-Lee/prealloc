@@ -5,6 +5,73 @@
 #include <fuse.h>
 #include <string.h>
 
+#define DIR_DENTRY 0
+#define FILE_DENTRY 1
+#define SMALL_FILE 1
+#define NORMAL_FILE 0
+
+#define PRE_LOC_NUM 10000
+#define PATH_LEN 64
+#define ALLOCATED_PATH "pre_alloc"
+
+
+#define likely(x)    __builtin_expect(!!(x), 1)
+#define unlikely(x)  __builtin_expect(!!(x), 0)
+
+
+struct dentry {
+	uint32_t fid;    // name in lustre
+	uint32_t inode;
+	uint32_t flags;
+	uint32_t mode;
+	uint32_t ctime;
+	uint32_t mtime;
+	uint32_t atime;
+	uint32_t size;
+	uint32_t uid;
+	uint32_t gid;
+	uint32_t nlink;
+};
+
+struct dirty_dentry {
+	struct dentry *dentry;
+	struct dirty_dentry *prev;
+	struct dirty_dentry *next;
+};
+
+struct unused_dentry {
+	struct dentry *dentry;
+	struct unused_dentry *prev;
+	struct unused_dentry *next;
+};
+
+struct fs_super {
+	char alloc_path[PATH_LEN];
+	
+	struct dirty_dentry *dirty_dentry_head;
+	struct dirty_dentry *dirty_dentry_tail;
+	struct unused_dentry *unused_dentry_head;
+	struct unused_dentry *unused_dentry_tail;
+};
+
+enum dentryflags {
+	D_type,    // file/dir
+	D_small_file,    // 1 is small file, 0 is normal file
+	D_dirty,
+};
+
+
+void set_dentry_flag(struct dentry *dentry, int flag_type, int val);
+int get_dentry_flag(struct dentry *dentry, int flag_type);
+int add_dentry_to_dirty_list(struct dentry *dentry);
+int remove_dentry_from_dirty_list(struct dentry *dentry);
+int add_dentry_to_unused_list(struct dentry *dentry);
+int remove_dentry_from_unused_list(struct dentry *dentry);
+int charlen(char *str);
+void init_sb(char * mount_point, char * access_point);
+
+
+// operation interface api
 void fs_init(char * mount_point, char * access_point);
 
 int fs_open(const char *path, struct fuse_file_info *fileInfo);
