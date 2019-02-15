@@ -4,6 +4,7 @@
 #define FUSE_USE_VERSION 30
 #include <fuse.h>
 #include <string.h>
+#include "../tools/map.h"
 
 #define DIR_DENTRY 0
 #define FILE_DENTRY 1
@@ -12,7 +13,21 @@
 
 #define PRE_LOC_NUM 10000
 #define PATH_LEN 64
+#define DENTRY_NAME_SIZE 32
 #define ALLOCATED_PATH "pre_alloc"
+
+// map config
+#define MAP_KEY_DELIMIT "#"
+#define MAP_KEY_LEN 40
+#define MAP_PRE_KEY_LEN 10    // inode +'#'
+
+
+#define ERROR -1
+#define SUCCESS 0
+// lookup error code
+#define LOOKUP_SUCCESS 0
+#define MISS_FILE 1
+#define MISS_DIR 2
 
 
 #define likely(x)    __builtin_expect(!!(x), 1)
@@ -52,6 +67,7 @@ struct fs_super {
 	struct dirty_dentry *dirty_dentry_tail;
 	struct unused_dentry *unused_dentry_head;
 	struct unused_dentry *unused_dentry_tail;
+	root_t tree;
 };
 
 enum dentryflags {
@@ -60,6 +76,10 @@ enum dentryflags {
 	D_dirty,
 };
 
+struct lookup_res {
+	struct dentry *dentry;
+	int error;
+};
 
 void set_dentry_flag(struct dentry *dentry, int flag_type, int val);
 int get_dentry_flag(struct dentry *dentry, int flag_type);
@@ -69,7 +89,7 @@ int add_dentry_to_unused_list(struct dentry *dentry);
 int remove_dentry_from_unused_list(struct dentry *dentry);
 int charlen(char *str);
 void init_sb(char * mount_point, char * access_point);
-
+int path_lookup(const char *path, struct lookup_res *lkup_res);
 
 // operation interface api
 void fs_init(char * mount_point, char * access_point);
