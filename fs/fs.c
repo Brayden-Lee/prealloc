@@ -202,6 +202,7 @@ void init_sb(char * mount_point, char * access_point)
 int path_lookup(const char *path, struct lookup_res *lkup_res)
 {
 	int s, len = strlen(path);
+	int last_pos = 0;
 	int cur_inode = 0;
 	uint64_t addr = 0;
 	map_t *map_item = NULL;
@@ -212,17 +213,26 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 	memset(search_key, 0, MAP_KEY_LEN);
 
 	s = 0;
+	last_pos = 0;
 	while (s <= len) {
 		if (s == len || path[s] == '/') {
 			s = s ? s : 1;
-			memcpy(dentry_name, path, s);
+			memcpy(dentry_name, &path[last_pos], s - last_pos);
 			dentry_name[s] = '\0';
 			sprintf(search_key, "%d", cur_inode);
 			strcat(search_key, MAP_KEY_DELIMIT);
 			strcat(search_key, dentry_name);
 			search_key[charlen(search_key)] = '\0';
+		#ifdef FS_DEBUG
+			printf("path_lookup, dentry name = %s, search key = %s\n", dentry_name, search_key);
+		#endif
 			map_item = get(&(fs_sb->tree), search_key);
 			if (map_item == NULL) {
+
+			#ifdef FS_DEBUG
+				printf("path_lookup, not find key = %s item in the map\n", search_key);
+			#endif
+
 				lkup_res->dentry = NULL;
 				if (s == len) {
 					lkup_res->error = MISS_FILE;
@@ -234,6 +244,10 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 			addr = map_item->val;
 			find_dentry = (struct dentry *) addr;
 			cur_inode = (int) find_dentry->inode;
+			if (s == 1)
+				last_pos = s;
+			else
+				last_pos = s + 1;
 		}
 		s++;
 	}
@@ -252,6 +266,10 @@ void fs_init(char * mount_point, char * access_point)
 	strcat(create_path, "/");
 	strcat(create_path, ALLOCATED_PATH);    // // like /mnt/lustre/pre_alloc
 	create_path[charlen(create_path)] = '\0';
+
+	if (access(create_path, F_OK) != 0) {
+		mkdir(create_path, O_CREAT);
+	}
 	
 	uint32_t i = 0;
 	char part[8];
@@ -265,7 +283,10 @@ void fs_init(char * mount_point, char * access_point)
 		strcat(create_path, part);
 		create_path[charlen(create_path)] = '\0';
 		fd = open(create_path, O_CREAT);
-		if (unlikely(fd)) {
+	#ifdef FS_DEBUG
+		printf("fs_init, create_path = %s, open fd = %d\n", create_path, fd);
+	#endif
+		if (unlikely(fd < 0)) {
 			printf("Init... part = %s not be created\n", part);
 		}
 		stat(create_path, &buf);
@@ -291,7 +312,7 @@ void fs_init(char * mount_point, char * access_point)
 
 int fs_open(const char *path, struct fuse_file_info *fileInfo)
 {
-
+	return -ENOSYS;
 }
 
 int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
@@ -320,6 +341,9 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 
 	if (fileInfo != NULL)
 		fileInfo->flags |= O_CREAT;
+#ifdef FS_DEBUG
+	printf("fs_create, will create path = %s, cur_name = %s\n", path, cur_name);
+#endif
 	struct lookup_res *lkup_res = NULL;
 	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
 	ret = path_lookup(p_path, lkup_res);
@@ -331,21 +355,34 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 		ret = -ENOTDIR;
 		goto out;
 	}
+	uint32_t p_inode = lkup_res->dentry->inode;
 	struct dentry *create_dentry = NULL;
 	create_dentry = fetch_dentry_from_unused_list();
 	if (create_dentry == NULL) {
 		ret = -ENFILE;    // not enough, need pre-alloc
 		goto out;
 	}
+#ifdef FS_DEBUG
+	printf("fs_create, fetch dentry fid = %d, inode = %d\n", (int)create_dentry->fid, (int)create_dentry->inode);
+#endif
 	add_dentry_to_dirty_list(create_dentry);
 	set_dentry_flag(create_dentry, D_type, FILE_DENTRY);
+	create_dentry->mode = S_IFREG | 0644;
+	// init the new dentry...
 	char create_key[MAP_KEY_LEN];
-	sprintf(create_key, "%d", (int)create_dentry->inode);
+	sprintf(create_key, "%d", (int)p_inode);
 	strcat(create_key, MAP_KEY_DELIMIT);
 	strcat(create_key, cur_name);
 	create_key[charlen(create_key)] = '\0';
 	uint64_t addr = (uint64_t) create_dentry;
-	put(&(fs_sb->tree), create_key, addr);
+	ret = put(&(fs_sb->tree), create_key, addr);
+#ifdef FS_DEBUG
+	if (ret == 1) {
+		printf("fs_create, put key = %s, its parent dentry inode = %d in the map!\n", create_key, (int)p_inode);
+	} else {
+		printf("fs_create, this key = %s, with parent inode = %d has already in the map\n", create_key, (int)p_inode);
+	}
+#endif
 
 	ret = SUCCESS;
 	if (fileInfo != NULL)
@@ -358,7 +395,82 @@ out:
 
 int fs_mkdir(const char *path, mode_t mode)
 {
-	
+	int i;
+	int ret = 0;
+	int len = strlen(path);
+	for (i = len - 1; i >= 0; --i)
+	{
+		if (path[i] == '/')
+			break;
+	}
+	len = (i > 0) ? i : 1;
+	char *p_path = (char *)calloc(1, len + 1);
+	if (i < 0)
+			return -ENOENT;  // no parent dir
+
+	int j;
+	for (j = 0; j < len; ++j) {
+			p_path[j] = path[j];
+	}
+	p_path[j] = '\0';
+
+	char cur_name[DENTRY_NAME_SIZE];
+	for (i = len, j = 0; i < strlen(path); i++, j++) {
+		cur_name[j] = path[i];
+	}
+	cur_name[j] = '\0';
+
+#ifdef FS_DEBUG
+	printf("fs_mkdir, will mkdir path = %s, cur_name = %s\n", path, cur_name);
+#endif
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(p_path, lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+	if (get_dentry_flag(dentry, D_type) != DIR_DENTRY) {
+		ret = -ENOTDIR;
+		goto out;
+	}
+
+	uint32_t p_inode = lkup_res->dentry->inode;
+	struct dentry *mkdir_dentry = NULL;
+	mkdir_dentry = fetch_dentry_from_unused_list();
+	if (mkdir_dentry == NULL) {
+		ret = -ENFILE;    // not enough, need pre-alloc
+		goto out;
+	}
+#ifdef FS_DEBUG
+	printf("fs_mkdir, fetch dentry fid = %d, inode = %d\n", (int)mkdir_dentry->fid, (int)mkdir_dentry->inode);
+#endif
+	add_dentry_to_dirty_list(mkdir_dentry);
+	set_dentry_flag(mkdir_dentry, D_type, DIR_DENTRY);
+	mkdir_dentry->mode = S_IFDIR | 0755;
+	// init the new dentry...
+	char mkdir_key[MAP_KEY_LEN];
+	sprintf(mkdir_key, "%d", (int)p_inode);
+	strcat(mkdir_key, MAP_KEY_DELIMIT);
+	strcat(mkdir_key, cur_name);
+	mkdir_key[charlen(mkdir_key)] = '\0';
+	uint64_t addr = (uint64_t) mkdir_dentry;
+	ret = put(&(fs_sb->tree), mkdir_key, addr);
+#ifdef FS_DEBUG
+	if (ret == 1) {
+		printf("fs_mkdir, put key = %s, its parent dentry inode = %d in the map!\n", mkdir_key, (int)p_inode);
+	} else {
+		printf("fs_mkdir, this key = %s, with parent inode = %d has already in the map\n", mkdir_key, (int)p_inode);
+	}
+#endif
+
+	ret = SUCCESS;
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;	
 }
 
 int fs_opendir(const char *path, struct fuse_file_info *fileInfo)
@@ -376,6 +488,9 @@ int fs_opendir(const char *path, struct fuse_file_info *fileInfo)
 			goto out;
 		}
 		fileInfo->fh = (uint64_t) lkup_res->dentry;
+	#ifdef FS_DEBUG
+		printf("fs_opendir, open path = %s, inode = %ld\n", path, fileInfo->fh);
+	#endif
 	}
 out:
 	free(lkup_res);
@@ -410,6 +525,10 @@ int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset
 	strcat(pre_key, MAP_KEY_DELIMIT);
 	int len = charlen(pre_key);
 	pre_key[len] = '\0';
+
+#ifdef FS_DEBUG
+	printf("fs_readdir, readdir path = %s, pre_key = %s\n", path, pre_key);
+#endif
 
 	map_t *node;
 	char *key = NULL;
@@ -450,6 +569,9 @@ int fs_getattr(const char* path, struct stat* st)
 		goto out;
 	}
 	dentry = lkup_res->dentry;
+#ifdef FS_DEBUG
+	printf("fs_getattr, getattr path = %s, its inode = %d\n", path, (int)dentry->inode);
+#endif
 	if (strcmp(path, "/") == 0) {
 		st->st_mode = S_IFDIR | 0755;
 	} else {
@@ -473,27 +595,27 @@ out:
 
 int fs_rmdir(const char *path)
 {
-
+	return -ENOSYS;
 }
 
 int fs_rename(const char *path, const char *newpath)
 {
-
+	return -ENOSYS;
 }
 
 int fs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fileInfo)
 {
-
+	return -ENOSYS;
 }
 
 int fs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fileInfo)
 {
-
+	return -ENOSYS;
 }
 
 int fs_release(const char *path, struct fuse_file_info *fileInfo)
 {
-
+	return -ENOSYS;
 }
 
 int fs_releasedir(const char * path, struct fuse_file_info * info)
@@ -504,42 +626,60 @@ int fs_releasedir(const char * path, struct fuse_file_info * info)
 
 int fs_utimens(const char * path, const struct timespec tv[2])
 {
-
+	int ret = 0;
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(path, lkup_res);
+	if (unlikely(ret == ERROR)) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+	dentry->atime = tv[0].tv_sec;
+	dentry->mtime = tv[1].tv_sec;
+#ifdef FS_DEBUG
+	printf("fs_utimens, update time dentry inode = %d\n", (int)dentry->inode);
+#endif
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;
 }
 
 int fs_truncate(const char * path, off_t length)
 {
-
+	return -ENOSYS;
 }
 
 int fs_unlink(const char * path)
 {
-
+	return -ENOSYS;
 }
 
 int fs_chmod(const char * path, mode_t mode)
 {
-
+	return -ENOSYS;
 }
 
 int fs_chown(const char * path, uid_t owner, gid_t group)
 {
-
+	return -ENOSYS;
 }
 
 int fs_access(const char * path, int amode)
 {
-
+	return -ENOSYS;
 }
 
 int fs_symlink(const char * oldpath, const char * newpath)
 {
-
+	return -ENOSYS;
 }
 
 int fs_readlink(const char * path, char * buf, size_t size)
 {
-
+	return -ENOSYS;
 }
 
 int fs_destroy()

@@ -11,7 +11,7 @@
 #define SMALL_FILE 1
 #define NORMAL_FILE 0
 
-#define PRE_LOC_NUM 10000
+#define PRE_LOC_NUM 1000
 #define PATH_LEN 64
 #define DENTRY_NAME_SIZE 32
 #define ALLOCATED_PATH "pre_alloc"
@@ -29,6 +29,9 @@
 #define MISS_FILE 1
 #define MISS_DIR 2
 
+
+// for DEBUG
+#define FS_DEBUG
 
 #define likely(x)    __builtin_expect(!!(x), 1)
 #define unlikely(x)  __builtin_expect(!!(x), 0)
