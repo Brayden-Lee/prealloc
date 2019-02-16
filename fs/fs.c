@@ -240,7 +240,7 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 				printf("path_lookup, not find key = %s item in the map\n", search_key);
 			#endif
 
-				lkup_res->dentry = NULL;
+				lkup_res->dentry = find_dentry;    // if failed record the last searched dentry
 				if (s == len) {
 					lkup_res->error = MISS_FILE;
 				} else {
@@ -285,6 +285,7 @@ void fs_init(char * mount_point, char * access_point)
 	struct dentry *dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
 	
 	for (i = 1; i < PRE_LOC_NUM; i++) {
+		memset(part, '\0', 8);
 		sprintf(part, "%d", i);
 		strcat(create_path, "/");
 		strcat(create_path, part);
@@ -314,12 +315,82 @@ void fs_init(char * mount_point, char * access_point)
 
 		// prealloc for next
 		dirname(create_path);
+		close(fd);
 	}
 }
 
 int fs_open(const char *path, struct fuse_file_info *fileInfo)
 {
-	return -ENOSYS;
+	int ret = 0;
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *) malloc(sizeof(struct lookup_res));
+	ret = path_lookup(path, lkup_res);
+	if (lkup_res->error == MISS_DIR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+	if (lkup_res->error == MISS_FILE) {
+		if ((fileInfo->flags & O_CREAT) == 0) {
+			ret = -ENOENT;
+			goto out;
+		}
+		if (get_dentry_flag(dentry, D_type) != DIR_DENTRY) {
+			ret = -ENOTDIR;
+			goto out;
+		}
+		char cur_name[DENTRY_NAME_SIZE];
+		int len = strlen(path);
+		int i = 0;
+		int j = 0;
+		for (i = len - 1; i >= 0; --i) {
+			if (path[i] == '/')
+				break;
+		}
+		for (i = i + 1, j = 0; i < len; i++, j++) {
+			cur_name[j] = path[i];
+		}
+		cur_name[j] = '\0';
+
+		uint32_t p_inode = dentry->inode;
+		struct dentry *create_dentry = NULL;
+		create_dentry = fetch_dentry_from_unused_list();
+		if (create_dentry == NULL) {
+			ret = -ENFILE;    // not enough, need pre-alloc
+			goto out;
+		}
+	#ifdef FS_DEBUG
+		printf("fs_open(create), fetch dentry fid = %d, inode = %d\n", (int)create_dentry->fid, (int)create_dentry->inode);
+	#endif
+		add_dentry_to_dirty_list(create_dentry);
+		set_dentry_flag(create_dentry, D_type, FILE_DENTRY);
+		create_dentry->mode = S_IFREG | 0644;
+		// init the new dentry...
+		char create_key[MAP_KEY_LEN];
+		sprintf(create_key, "%d", (int)p_inode);
+		strcat(create_key, MAP_KEY_DELIMIT);
+		strcat(create_key, cur_name);
+		create_key[charlen(create_key)] = '\0';
+		uint64_t addr = (uint64_t) create_dentry;
+		ret = put(&(fs_sb->tree), create_key, addr);
+	#ifdef FS_DEBUG
+		if (ret == 1) {
+			printf("fs_create, put key = %s, its parent dentry inode = %d in the map!\n", create_key, (int)p_inode);
+		} else {
+			printf("fs_create, this key = %s, with parent inode = %d has already in the map\n", create_key, (int)p_inode);
+		}
+	#endif
+		ret = SUCCESS;
+		fileInfo->fh = addr;
+		goto out;
+	}
+	ret = SUCCESS;
+	fileInfo->fh = (uint64_t) dentry;
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;
 }
 
 int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
@@ -341,7 +412,7 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 	}
 	p_path[j] = '\0';
 	char cur_name[DENTRY_NAME_SIZE];
-	for (i = len, j = 0; i < strlen(path); i++, j++) {
+	for (i = i + 1, j = 0; i < strlen(path); i++, j++) {
 		cur_name[j] = path[i];
 	}
 	cur_name[j] = '\0';
@@ -393,7 +464,7 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 
 	ret = SUCCESS;
 	if (fileInfo != NULL)
-		fileInfo->fh = 0;
+		fileInfo->fh = addr;
 out:
 	free(lkup_res);
 	lkup_res = NULL;
@@ -620,12 +691,69 @@ int fs_rename(const char *path, const char *newpath)
 
 int fs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fileInfo)
 {
-	return -ENOSYS;
+	// a simple write implement
+	int ret = 0;
+	int fd = 0;
+	uint64_t addr = fileInfo->fh;
+	struct dentry *dentry = NULL;
+	dentry = (struct dentry *) addr;
+
+	char part[8];
+	memset(part, '\0', 8);
+	sprintf(part, "%d", (int)dentry->fid);
+	char read_path[PATH_LEN];
+	memset(read_path, 0, PATH_LEN);
+	strcpy(read_path, fs_sb->alloc_path);
+	strcat(read_path, "/");
+	strcat(read_path, ALLOCATED_PATH);
+	strcat(read_path, "/");
+	strcat(read_path, part);
+	read_path[charlen(read_path)] = '\0';
+
+	fd = open(read_path, fileInfo->flags);
+	if (unlikely(fd < 0)) {
+		return -EBADF;
+	}
+	ret = pread(fd, buf, size, offset);
+#ifdef FS_DEBUG
+	printf("fs_read, read %d data from fid = %d in real path = %s\n", ret, (int)dentry->fid, read_path);
+#endif
+	offset += size;
+	return ret;
 }
 
 int fs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fileInfo)
 {
-	return -ENOSYS;
+	// a simple write implement
+	int ret = 0;
+	int fd = 0;
+	uint64_t addr = fileInfo->fh;
+	struct dentry *dentry = NULL;
+	dentry = (struct dentry *) addr;
+
+	char part[8];
+	memset(part, '\0', 8);
+	sprintf(part, "%d", (int)dentry->fid);
+	char write_path[PATH_LEN];
+	memset(write_path, 0, PATH_LEN);
+	strcpy(write_path, fs_sb->alloc_path);
+	strcat(write_path, "/");
+	strcat(write_path, ALLOCATED_PATH);
+	strcat(write_path, "/");
+	strcat(write_path, part);
+	write_path[charlen(write_path)] = '\0';
+
+	fd = open(write_path, fileInfo->flags);
+	if (unlikely(fd < 0)) {
+		return -EBADF;
+	}
+	ret = pwrite(fd, buf, size, offset);
+#ifdef FS_DEBUG
+	printf("fs_write, write %d data from fid = %d in real path = %s\n", ret, (int)dentry->fid, write_path);
+#endif
+	dentry->size += size;
+	offset += size;
+	return ret;
 }
 
 int fs_release(const char *path, struct fuse_file_info *fileInfo)
