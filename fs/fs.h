@@ -71,6 +71,7 @@ struct fs_super {
 	struct unused_dentry *unused_dentry_head;
 	struct unused_dentry *unused_dentry_tail;
 	root_t tree;
+	uint32_t curr_dir_id;
 };
 
 enum dentryflags {
@@ -84,6 +85,8 @@ struct lookup_res {
 	int error;
 };
 
+
+uint32_t generate_unique_id();
 void set_dentry_flag(struct dentry *dentry, int flag_type, int val);
 int get_dentry_flag(struct dentry *dentry, int flag_type);
 int add_dentry_to_dirty_list(struct dentry *dentry);

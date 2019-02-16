@@ -13,6 +13,11 @@
 
 struct fs_super *fs_sb = NULL;
 
+uint32_t generate_unique_id()
+{
+	fs_sb->curr_dir_id++;
+	return fs_sb->curr_dir_id;
+}
 
 void set_dentry_flag(struct dentry *dentry, int flag_type, int val)
 {
@@ -175,13 +180,15 @@ void init_sb(char * mount_point, char * access_point)
 	fs_sb->unused_dentry_head = NULL;
 	fs_sb->unused_dentry_tail = NULL;
 	fs_sb->tree = RB_ROOT;
+	fs_sb->curr_dir_id = 0;
 
 	// root should in map first!
 	struct stat root_buf;
 	stat(access_point, &root_buf);
 	struct dentry *dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
 	dentry->fid = 0;    // name in lustre
-	dentry->inode = root_buf.st_ino;
+	//dentry->inode = root_buf.st_ino;
+	dentry->inode = generate_unique_id();
 	dentry->flags = 0;
 	set_dentry_flag(dentry, D_type, DIR_DENTRY);
 	dentry->mode = root_buf.st_mode;
@@ -439,17 +446,25 @@ int fs_mkdir(const char *path, mode_t mode)
 
 	uint32_t p_inode = lkup_res->dentry->inode;
 	struct dentry *mkdir_dentry = NULL;
-	mkdir_dentry = fetch_dentry_from_unused_list();
-	if (mkdir_dentry == NULL) {
-		ret = -ENFILE;    // not enough, need pre-alloc
-		goto out;
-	}
-#ifdef FS_DEBUG
-	printf("fs_mkdir, fetch dentry fid = %d, inode = %d\n", (int)mkdir_dentry->fid, (int)mkdir_dentry->inode);
-#endif
-	add_dentry_to_dirty_list(mkdir_dentry);
-	set_dentry_flag(mkdir_dentry, D_type, DIR_DENTRY);
+	//mkdir_dentry = fetch_dentry_from_unused_list();
+	// for dir, should generate the new dentry
+	mkdir_dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
+	mkdir_dentry->fid = 0;
+	mkdir_dentry->inode = generate_unique_id();
+	mkdir_dentry->flags = 0;
+	set_dentry_flag(mkdir_dentry, D_type, DIR_DENTRY);
 	mkdir_dentry->mode = S_IFDIR | 0755;
+	mkdir_dentry->ctime = time(NULL);
+	mkdir_dentry->mtime = time(NULL);
+	mkdir_dentry->atime = time(NULL);
+	mkdir_dentry->size = 0;
+	mkdir_dentry->uid = getuid();
+	mkdir_dentry->gid = getgid();
+	mkdir_dentry->nlink = 0;
+#ifdef FS_DEBUG
+	printf("fs_mkdir, create new dir dentry id = %d, name = %s\n", (int)mkdir_dentry->inode, cur_name);
+#endif
+	add_dentry_to_dirty_list(mkdir_dentry);	
 	// init the new dentry...
 	char mkdir_key[MAP_KEY_LEN];
 	sprintf(mkdir_key, "%d", (int)p_inode);
