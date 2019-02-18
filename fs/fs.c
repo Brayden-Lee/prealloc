@@ -61,13 +61,17 @@ int add_dentry_to_dirty_list(struct dentry *dentry)
 	return 0;
 }
 
-// only remove from tail
 int remove_dentry_from_dirty_list(struct dentry *dentry)
 {
 	struct dirty_dentry * dirty_dentry = fs_sb->dirty_dentry_tail;
-	while (dirty_dentry->dentry->fid != dentry->fid && dirty_dentry != NULL) {
-		dirty_dentry = dirty_dentry->prev;
+	if (get_dentry_flag(dentry, D_type) == DIR_DENTRY) {
+		while (dirty_dentry->dentry->inode != dentry->inode && dirty_dentry != NULL)
+			dirty_dentry = dirty_dentry->prev;
+	} else {
+		while (dirty_dentry->dentry->fid != dentry->fid && dirty_dentry != NULL)
+			dirty_dentry = dirty_dentry->prev;
 	}
+
 	if (dirty_dentry == NULL) {
 		printf("this dentry not in dirty list\n");
 		return 0;
@@ -90,6 +94,7 @@ int remove_dentry_from_dirty_list(struct dentry *dentry)
 	}
 out:
 	set_dentry_flag(dentry, D_dirty, 0);
+	
 	free(dirty_dentry);
 	dirty_dentry = NULL;
 	return 0;	
@@ -692,7 +697,104 @@ out:
 
 int fs_rmdir(const char *path)
 {
-	return -ENOSYS;
+	int ret = 0;
+	int len = strlen(path);
+	int split_pos = 0;
+	int i;
+	for (i = len - 1; i >= 0; --i) {
+		if (path[i] == '/')
+			break;
+	}
+	split_pos = (i > 0) ? i : 1;
+	char *p_path = (char *)calloc(1, split_pos + 1);
+	if (i < 0)
+		return -ENOENT;
+	int j;
+	for (j = 0; j < split_pos; ++j) {
+		p_path[j] = path[j];
+	}
+	p_path[j] = '\0';
+	char cur_name[DENTRY_NAME_SIZE];
+	memset(cur_name, '\0', DENTRY_NAME_SIZE);
+	if (split_pos == 1)
+		memcpy(cur_name, &path[split_pos], len - split_pos);
+	else
+		memcpy(cur_name, &path[split_pos + 1], len - split_pos - 1);
+
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(p_path, lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+	if (get_dentry_flag(dentry, D_type) != DIR_DENTRY) {
+		ret = -ENOTDIR;
+		goto out;
+	}
+
+	char rm_key[MAP_KEY_LEN];
+	memset(rm_key, '\0', MAP_KEY_LEN);
+	sprintf(rm_key, "%d", (int)dentry->inode);    // parent inode (by generate_unique_id)
+	strcat(rm_key, MAP_KEY_DELIMIT);
+	strcat(rm_key, cur_name);
+	map_t *rm_node;
+	rm_node = get(&(fs_sb->tree), rm_key);
+	if (rm_node == NULL) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = (struct dentry *) rm_node->val;
+	if (get_dentry_flag(dentry, D_type) != DIR_DENTRY) {
+		ret = -ENOTDIR;
+		goto out;
+	}
+	
+	char pre_key[MAP_PRE_KEY_LEN];
+	memset(pre_key, '\0', MAP_PRE_KEY_LEN);
+	sprintf(pre_key, "%d", (int)dentry->inode);
+	strcat(pre_key, MAP_KEY_DELIMIT);
+	len = charlen(pre_key);
+
+#ifdef FS_DEBUG
+	printf("fs_rmdir, check dir = %s whether have child, pre key = %s\n", cur_name, pre_key);
+#endif
+	map_t *node;
+	char *key = NULL;
+	bool match = true;
+	// if you do not check the child, you can rm all the subtree
+	for (node = map_first(&(fs_sb->tree)); node; node = map_next(&(node->node))) {
+		key = node->key;
+		for (i = 0; i < len; i++) {
+			if (pre_key[i] != key[i]) {
+				match = false;
+				break;
+			}
+		}
+		if (match) {
+		#ifdef FS_DEBUG
+			printf("fs_rmdir, find sub dir with key = %s\n", key);
+		#endif
+			ret = -ENOTEMPTY;
+			goto out;
+		}
+		match = true;
+	}
+
+#ifdef FS_DEBUG
+	printf("fs_rmdir, will del node and free dir dentry, key = %s\n", rm_key);
+#endif
+	del(&(fs_sb->tree), rm_node);
+	remove_dentry_from_dirty_list(dentry);
+	free(dentry);
+	dentry = NULL;
+	ret = SUCCESS;
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;
 }
 
 int fs_rename(const char *path, const char *newpath)
@@ -808,7 +910,72 @@ int fs_truncate(const char * path, off_t length)
 
 int fs_unlink(const char * path)
 {
-	return -ENOSYS;
+	int ret = 0;
+	int len = strlen(path);
+	int split_pos = 0;
+	int i;
+	for (i = len - 1; i >= 0; --i) {
+		if (path[i] == '/')
+			break;
+	}
+	split_pos = (i > 0) ? i : 1;
+	char *p_path = (char *)calloc(1, split_pos + 1);
+	if (i < 0)
+		return -ENOENT;
+	int j;
+	for (j = 0; j < split_pos; ++j) {
+		p_path[j] = path[j];
+	}
+	p_path[j] = '\0';
+	char cur_name[DENTRY_NAME_SIZE];
+	memset(cur_name, '\0', DENTRY_NAME_SIZE);
+	if (split_pos == 1)
+		memcpy(cur_name, &path[split_pos], len - split_pos);
+	else
+		memcpy(cur_name, &path[split_pos + 1], len - split_pos - 1);
+
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(p_path, lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+	if (get_dentry_flag(dentry, D_type) != DIR_DENTRY) {
+		ret = -ENOTDIR;
+		goto out;
+	}
+
+	char rm_key[MAP_KEY_LEN];
+	memset(rm_key, '\0', MAP_KEY_LEN);
+	sprintf(rm_key, "%d", (int)dentry->inode);    // parent inode
+	strcat(rm_key, MAP_KEY_DELIMIT);
+	strcat(rm_key, cur_name);
+	map_t *rm_node;
+	rm_node = get(&(fs_sb->tree), rm_key);
+	if (rm_node == NULL) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = (struct dentry *) rm_node->val;
+	if (get_dentry_flag(dentry, D_type) == DIR_DENTRY) {
+		ret = -EISDIR;
+		goto out;
+	}
+
+#ifdef FS_DEBUG
+	printf("fs_unlink, will del node and add a unused dentry, key = %s\n", rm_key);
+#endif
+	del(&(fs_sb->tree), rm_node);
+	remove_dentry_from_dirty_list(dentry);
+	add_dentry_to_unused_list(dentry);    // for file, need recycle
+	ret = SUCCESS;
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;
 }
 
 int fs_chmod(const char * path, mode_t mode)

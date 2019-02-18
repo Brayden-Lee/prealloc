@@ -45,6 +45,11 @@ int put(root_t *root, char* key, uint64_t val) {
     return 1;
 }
 
+void del(root_t *root, map_t *data) {
+	rb_erase(&(data->node), root);
+	map_free(data);
+}
+
 map_t *map_first(root_t *tree) {
     rb_node_t *node = rb_first(tree);
     return (rb_entry(node, map_t, node));
@@ -65,8 +70,4 @@ void map_free(map_t *node){
         node = NULL;
     }
 }
-
-#endif  //_MAP_H
-
-/* vim: set ts=4 sw=4 sts=4 tw=100 */
 

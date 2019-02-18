@@ -134,7 +134,7 @@ static struct fuse_operations fuse_ops =
 static void usage(void)
 {
     printf(
-    "usage:\n"
+    "usage:./stackfs /mnt/mountpoint /mnt/access -d\n"
     );
 }
 
@@ -144,19 +144,27 @@ int main(int argc, char * argv[])
 	int i;
 
 	for (i = 0; i < argc; i++) {
-		if (strcmp(argv[i], "--help") == 0) {
+		if ((argc < 3) || (strcmp(argv[i], "--help") == 0)) {
 			usage();
 			return 0;
 		}
 	}
 
 	int fuse_argc = 0;
-	char * fuse_argv[argc];
+	//char * fuse_argv[argc];
+	char * fuse_argv[20];
+	fuse_argv[fuse_argc++] = argv[0];
+	fuse_argv[fuse_argc++] = argv[1];    // mount point
+	if (argc > 3) {
+		fuse_argv[fuse_argc++] = argv[3];
+	}
+	/*
 	for (i = 0; i < argc; i++) {
 		if (argv[i] != NULL) {
 			fuse_argv[fuse_argc++] = argv[i];
 		}
 	}
+	*/
 
 	fs_init(argv[1], argv[2]);
 	printf("starting fuse main...\n");
