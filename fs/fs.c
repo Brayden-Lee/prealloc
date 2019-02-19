@@ -180,6 +180,9 @@ void init_sb(char * mount_point, char * access_point)
 {
 	fs_sb = (struct fs_super *) calloc(1, sizeof(struct fs_super));
 	strcpy(fs_sb->alloc_path, access_point);
+	if (mount_point[strlen(mount_point) - 1] == '/')
+		mount_point[strlen(mount_point) - 1] = '\0';
+	fs_sb->mount_point = mount_point;
 	fs_sb->dirty_dentry_head = NULL;
 	fs_sb->dirty_dentry_tail = NULL;
 	fs_sb->unused_dentry_head = NULL;
@@ -995,12 +998,135 @@ int fs_access(const char * path, int amode)
 
 int fs_symlink(const char * oldpath, const char * newpath)
 {
-	return -ENOSYS;
+	int ret = 0;
+	int i, j;
+	int len_oldpath = strlen(oldpath);
+	int len_mount = strlen(fs_sb->mount_point);
+	struct lookup_res *lkup_res = NULL;
+	struct lookup_res *old_lkup_res = NULL;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	old_lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(newpath, lkup_res);
+	if (lkup_res->error != MISS_FILE) {
+		ret = -EEXIST;
+		goto out;
+	}
+	if (get_dentry_flag(lkup_res->dentry, D_type) != DIR_DENTRY) {
+		ret = -ENOENT;
+		goto out;
+	}
+	int len = len_oldpath - len_mount;
+	char* old_real_path = (char *)calloc(1, len + 1);
+	for (i = len_mount, j = 0; i < len_oldpath; i++, j++) {
+		old_real_path[j] = oldpath[i];
+	}
+	old_real_path[j] = '\0';
+	ret = path_lookup(old_real_path, old_lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	char cur_name[DENTRY_NAME_SIZE];
+	memset(cur_name, '\0', DENTRY_NAME_SIZE);
+	int split_pos = 0;
+	for (i = strlen(newpath) - 1; i >= 0; --i) {
+		if (newpath[i] == '/')
+			break;
+	}
+	split_pos = (i > 0) ? i : 1;
+	if (split_pos == 1)
+		memcpy(cur_name, &newpath[split_pos], strlen(newpath) - split_pos);
+	else
+		memcpy(cur_name, &newpath[split_pos + 1], strlen(newpath) - split_pos - 1);
+	uint32_t p_inode = lkup_res->dentry->inode;
+	struct dentry *create_dentry = NULL;
+	create_dentry = (struct dentry *)calloc(1, sizeof(struct dentry));
+	create_dentry->fid = 0;
+	create_dentry->inode = old_lkup_res->dentry->inode;
+	create_dentry->flags = 0;
+	add_dentry_to_dirty_list(create_dentry);
+	set_dentry_flag(create_dentry, D_type, FILE_DENTRY);
+	create_dentry->mode = S_IFLNK | 0777;
+	create_dentry->ctime = time(NULL);
+	create_dentry->mtime = time(NULL);
+	create_dentry->atime = time(NULL);
+	create_dentry->uid = getuid();
+	create_dentry->gid = getgid();
+	old_lkup_res->dentry->nlink++;
+#ifdef FS_DEBUG
+	printf("fs_symlink, new link file inode = %d, linked name = %s\n", create_dentry->inode, dirname(old_real_path));
+#endif
+
+	char create_key[MAP_KEY_LEN];
+	memset(create_key, '\0', MAP_KEY_LEN);
+	sprintf(create_key, "%d", (int)p_inode);
+	strcat(create_key, MAP_KEY_DELIMIT);
+	strcat(create_key, cur_name);
+	uint64_t addr = (uint64_t) create_dentry;
+	ret = put(&(fs_sb->tree), create_key, addr);
+#ifdef FS_DEBUG
+	if (ret == 1) {
+		printf("fs_create, put key = %s, its parent dentry inode = %d in the map!\n", create_key, (int)p_inode);
+	} else {
+		printf("fs_create, this key = %s, with parent inode = %d has already in the map\n", create_key, (int)p_inode);
+	}
+#endif
+	ret = SUCCESS;
+out:
+	free(lkup_res);
+	free(old_lkup_res);
+	lkup_res = NULL;
+	old_lkup_res = NULL;
+	return ret;
 }
 
 int fs_readlink(const char * path, char * buf, size_t size)
 {
-	return -ENOSYS;
+	int ret = 0;
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *) malloc(sizeof(struct lookup_res));
+	ret = path_lookup(path, lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+	if (!S_ISLNK(dentry->mode)) {
+		ret = EINVAL;
+		goto out;
+	}
+
+	map_t *node;
+	struct dentry *find_dentry = NULL;
+	for (node = map_first(&(fs_sb->tree)); node; node = map_next(&(node->node))) {
+		find_dentry = (struct dentry *)node->val;
+		if (find_dentry->inode == dentry->inode)
+			break;
+	}
+	char *key = NULL;
+	key = node->key;
+#ifdef FS_DEBUG
+	printf("fs_readlink, find key = %s\n", key);
+#endif
+	int i;
+	for (i = 0; i < strlen(key); i++) {
+		if (key[i] == '#')
+			break;
+	}
+	int j;
+	for (i = i + 1, j = 0; i < strlen(key); i++, j++) {
+		buf[j] = key[i];
+	}
+	buf[j] = '\0';
+	//sprintf(buf, "%d", (int)dentry->inode);
+#ifdef FS_DEBUG
+	printf("fs_readlink, buf = %s, dentry inode = %d\n", buf, (int)dentry->inode);
+#endif
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;
 }
 
 int fs_destroy()
