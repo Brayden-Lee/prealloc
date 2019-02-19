@@ -249,6 +249,7 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 			#endif
 
 				lkup_res->dentry = find_dentry;    // if failed record the last searched dentry
+				//lkup_res->p_inode = cur_inode;
 				if (s == len) {
 					lkup_res->error = MISS_FILE;
 				} else {
@@ -256,6 +257,7 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 				}
 				return ERROR;
 			}
+			lkup_res->p_inode = cur_inode;
 			addr = map_item->val;
 			find_dentry = (struct dentry *) addr;
 			cur_inode = (int) find_dentry->inode;
@@ -800,9 +802,128 @@ out:
 	return ret;
 }
 
+int changename(struct lookup_res *lkup_res, const char *path, const char *newpath)
+{
+	int p_inode = lkup_res->p_inode;
+	int i, j;
+	char cur_name[DENTRY_NAME_SIZE];
+	char new_cur_name[DENTRY_NAME_SIZE];
+	memset(cur_name, '\0', DENTRY_NAME_SIZE);
+	memset(new_cur_name, '\0', DENTRY_NAME_SIZE);
+	int len = strlen(path);
+	int new_len = strlen(newpath);
+	for (i = len - 1; i >= 0; i--) {
+		if (path[i] == '/')
+			break;
+	}
+	if (i == 0)
+		memcpy(cur_name, &path[1], len);
+	else
+		memcpy(cur_name, &path[i + 1], len - i - 1);
+	for (j = new_len - 1; j >= 0; j--) {
+		if (newpath[j] == '/')
+			break;
+	}
+	if (j == 0)
+		memcpy(new_cur_name, &newpath[1], new_len);
+	else
+		memcpy(new_cur_name, &newpath[j + 1], new_len - j - 1);
+
+	char old_key[MAP_KEY_LEN];
+	char new_key[MAP_KEY_LEN];
+	memset(old_key, '\0', MAP_KEY_LEN);
+	memset(new_key, '\0', MAP_KEY_LEN);
+	sprintf(old_key, "%d", p_inode);
+	strcat(old_key, MAP_KEY_DELIMIT);
+	strcat(old_key, cur_name);
+	sprintf(new_key, "%d", p_inode);
+	strcat(new_key, MAP_KEY_DELIMIT);
+	strcat(new_key, new_cur_name);
+	uint64_t addr = (uint64_t) lkup_res->dentry;
+
+#ifdef FS_DEBUG
+	printf("changename, old_key = %s, new_key = %s\n", old_key, new_key);
+#endif
+	map_t *rm_node;
+	rm_node = get(&(fs_sb->tree), old_key);
+	if (rm_node == NULL)
+		return -1;
+	del(&(fs_sb->tree), rm_node);
+	put(&(fs_sb->tree), new_key, addr);
+	return 0;
+}
+
+// mv /a/a /b  ==> rename /a/a /b/a
 int fs_rename(const char *path, const char *newpath)
 {
-	return -ENOSYS;
+	int i, j, ret = 0;
+	int len_path = strlen(path);
+	int len_newpath = strlen(newpath);
+	struct lookup_res *lkup_res = NULL;
+	struct lookup_res *new_lkup_res = NULL;
+	if (strcmp(path, newpath) == 0)
+		return 0;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	new_lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(path, lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	ret = path_lookup(newpath, new_lkup_res);
+	if (ret == SUCCESS) {
+		ret = -EEXIST;
+		goto out;
+	}
+	if (new_lkup_res->error == MISS_DIR) {
+		ret = -ENOENT;
+		goto out;
+	}
+#ifdef FS_DEBUG
+	printf("fs_rename, path = %s, newpath = %s\n", path, newpath);
+#endif
+	bool ismove = false;
+	for (i = len_path - 1; i >= 0; i--) {
+		if (path[i] == '/')
+			break;
+	}
+	for (j = len_newpath - 1; j >= 0; j--) {
+		if (newpath[j] == '/')
+			break;
+	}
+	if (i != j) {
+		ismove = true;
+	} else {
+		int k = i;
+		for (; k >= 0; k--) {
+			if (path[k] != newpath[k]) {
+				ismove = true;
+				break;
+			}
+		}
+		if (i < j) {
+			ret = -EPERM;
+			goto out;
+		}
+	}
+	if (ismove && get_dentry_flag(new_lkup_res->dentry, D_type) != DIR_DENTRY) {
+		ret = -ENOTDIR;
+		goto out;
+	}
+#ifdef FS_DEBUG
+	printf("fs_rename, ismove = %d\n", ismove);
+#endif
+	if (ismove)
+		//ret = movename();
+		ret = -ENOSYS;
+	else
+		ret = changename(lkup_res, path, newpath);
+out:
+	free(lkup_res);
+	free(new_lkup_res);
+	lkup_res = NULL;
+	new_lkup_res = NULL;
+	return ret;
 }
 
 int fs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fileInfo)
@@ -993,7 +1114,10 @@ int fs_chown(const char * path, uid_t owner, gid_t group)
 
 int fs_access(const char * path, int amode)
 {
-	return -ENOSYS;
+#ifdef FS_DEBUG
+	printf("fs_access path = %s, mast = %08x\n", path, amode);
+#endif
+	return 0;
 }
 
 int fs_symlink(const char * oldpath, const char * newpath)

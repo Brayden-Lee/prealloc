@@ -83,6 +83,7 @@ enum dentryflags {
 
 struct lookup_res {
 	struct dentry *dentry;
+	int p_inode;
 	int error;
 };
 
