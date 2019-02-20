@@ -291,9 +291,10 @@ void fs_init(char * mount_point, char * access_point)
 	char part[8];
 	int fd = 0;
 	struct stat buf;
-	struct dentry *dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
+	struct dentry *dentry = NULL;
 	
 	for (i = 1; i < PRE_LOC_NUM; i++) {
+		dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
 		memset(part, '\0', 8);
 		sprintf(part, "%d", i);
 		strcat(create_path, "/");
@@ -305,6 +306,8 @@ void fs_init(char * mount_point, char * access_point)
 	#endif
 		if (unlikely(fd < 0)) {
 			printf("Init... part = %s not be created\n", part);
+			continue;
+			
 		}
 		stat(create_path, &buf);
 		// hook dentry
@@ -956,6 +959,7 @@ int fs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_
 	printf("fs_read, read %d data from fid = %d in real path = %s\n", ret, (int)dentry->fid, read_path);
 #endif
 	offset += size;
+	close(fd);
 	return ret;
 }
 
@@ -990,12 +994,16 @@ int fs_write(const char *path, const char *buf, size_t size, off_t offset, struc
 #endif
 	dentry->size += size;
 	offset += size;
+	close(fd);
 	return ret;
 }
 
 int fs_release(const char *path, struct fuse_file_info *fileInfo)
 {
-	return -ENOSYS;
+#ifdef FS_DEBUG
+	printf("fs_release, path = %s has been close in write/read operation\n", path);
+#endif
+	return 0;
 }
 
 int fs_releasedir(const char * path, struct fuse_file_info * info)
