@@ -65,7 +65,7 @@ struct unused_dentry {
 
 struct fs_super {
 	char alloc_path[PATH_LEN];
-	char *mount_point;
+	char mount_point[PATH_LEN];
 	
 	struct dirty_dentry *dirty_dentry_head;
 	struct dirty_dentry *dirty_dentry_tail;

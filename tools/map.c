@@ -20,8 +20,11 @@ map_t *get(root_t *root, char *str) {
 
 int put(root_t *root, char* key, uint64_t val) {
     map_t *data = (map_t*)malloc(sizeof(map_t));
-    data->key = (char*)malloc(sizeof(key));
+	int key_len = strlen(key);
+	data->key = (char *)malloc(key_len + 1);
+    //data->key = (char*)malloc(sizeof(key));
     strcpy(data->key, key);
+	data->key[key_len] = '\0';
 	data->val = val;
     
     rb_node_t **new_node = &(root->rb_node), *parent = NULL;

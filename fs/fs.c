@@ -65,10 +65,13 @@ int remove_dentry_from_dirty_list(struct dentry *dentry)
 {
 	struct dirty_dentry * dirty_dentry = fs_sb->dirty_dentry_tail;
 	if (get_dentry_flag(dentry, D_type) == DIR_DENTRY) {
-		while (dirty_dentry->dentry->inode != dentry->inode && dirty_dentry != NULL)
+		while (dirty_dentry != NULL && dirty_dentry->dentry->inode != dentry->inode)
 			dirty_dentry = dirty_dentry->prev;
-	} else {
-		while (dirty_dentry->dentry->fid != dentry->fid && dirty_dentry != NULL)
+	} else if(get_dentry_flag(dentry, D_type) == FILE_DENTRY) {
+		while (dirty_dentry != NULL && dirty_dentry->dentry->fid != dentry->fid)
+			dirty_dentry = dirty_dentry->prev;
+	} else {    // is link
+		while (dirty_dentry != NULL && dirty_dentry->dentry->fid != dentry->fid && dirty_dentry->dentry->inode != dentry->inode)
 			dirty_dentry = dirty_dentry->prev;
 	}
 
@@ -203,9 +206,7 @@ void init_sb(char * mount_point, char * access_point)
 {
 	fs_sb = (struct fs_super *) calloc(1, sizeof(struct fs_super));
 	strcpy(fs_sb->alloc_path, access_point);
-	if (mount_point[strlen(mount_point) - 1] == '/')
-		mount_point[strlen(mount_point) - 1] = '\0';
-	fs_sb->mount_point = mount_point;
+	strcpy(fs_sb->mount_point, mount_point);
 	fs_sb->dirty_dentry_head = NULL;
 	fs_sb->dirty_dentry_tail = NULL;
 	fs_sb->unused_dentry_head = NULL;
@@ -254,7 +255,7 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 	last_pos = 0;
 	while (s <= len) {
 		if (s == len || path[s] == '/') {
-			memset(dentry_name, '\0', MAP_KEY_LEN);
+			memset(dentry_name, '\0', DENTRY_NAME_SIZE);
 			memset(search_key, '\0', MAP_KEY_LEN);
 			s = s ? s : 1;
 			memcpy(dentry_name, &path[last_pos], s - last_pos);
@@ -298,6 +299,9 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 
 void fs_init(char * mount_point, char * access_point)
 {
+#ifdef FS_DEBUG
+	printf("fs_init, mount_point = %s, access_point = %s\n", mount_point, access_point);
+#endif
 	init_sb(mount_point, access_point);
 
 	char create_path[PATH_LEN];
@@ -316,17 +320,21 @@ void fs_init(char * mount_point, char * access_point)
 	struct stat buf;
 	struct dentry *dentry = NULL;
 	int max_open_num = PRE_LOC_NUM;
+
+	char tmp[PATH_LEN];
 	
 	for (i = 1; i < max_open_num; i++) {
 		dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
 		memset(part, '\0', 8);
-		sprintf(part, "%d", i);
-		strcat(create_path, "/");
-		strcat(create_path, part);
-		create_path[charlen(create_path)] = '\0';
-		fd = open(create_path, O_CREAT | O_RDWR);
+		memset(tmp, '\0', PATH_LEN);
+		strcpy(tmp, create_path);
+		sprintf(part, "%d", (int)i);
+		strcat(tmp, "/");
+		strcat(tmp, part);
+		//create_path[charlen(create_path)] = '\0';
+		fd = open(tmp, O_CREAT | O_RDWR);
 	#ifdef FS_DEBUG
-		printf("fs_init, create_path = %s, open fd = %d\n", create_path, fd);
+		printf("fs_init, create_path = %s, open fd = %d\n", tmp, fd);
 	#endif
 		if (unlikely(fd < 0)) {
 			printf("Init... part = %s not be created, max num increase\n", part);
@@ -334,7 +342,7 @@ void fs_init(char * mount_point, char * access_point)
 			continue;
 			
 		}
-		stat(create_path, &buf);
+		stat(tmp, &buf);
 		// hook dentry
 		//dentry->fid = i;    // name in lustre
 		dentry->fid = (uint32_t) fd;
@@ -352,7 +360,7 @@ void fs_init(char * mount_point, char * access_point)
 		add_dentry_to_unused_list(dentry);
 
 		// prealloc for next
-		dirname(create_path);
+		//dirname(create_path);
 		//close(fd);
 	}
 }
@@ -379,6 +387,7 @@ int fs_open(const char *path, struct fuse_file_info *fileInfo)
 			goto out;
 		}
 		char cur_name[DENTRY_NAME_SIZE];
+		memset(cur_name, '\0', DENTRY_NAME_SIZE);
 		int len = strlen(path);
 		int i = 0;
 		int j = 0;
@@ -386,10 +395,12 @@ int fs_open(const char *path, struct fuse_file_info *fileInfo)
 			if (path[i] == '/')
 				break;
 		}
-		for (i = i + 1, j = 0; i < len; i++, j++) {
-			cur_name[j] = path[i];
-		}
-		cur_name[j] = '\0';
+		int split_pos = 0;
+		split_pos = (i > 0) ? i : 1;
+		if (split_pos == 1)
+			memcpy(cur_name, &path[split_pos], len - split_pos);
+		else
+			memcpy(cur_name, &path[split_pos + 1], len - split_pos - 1);
 
 		uint32_t p_inode = dentry->inode;
 		struct dentry *create_dentry = NULL;
@@ -597,6 +608,7 @@ out:
 int fs_opendir(const char *path, struct fuse_file_info *fileInfo)
 {
 	int ret = 0;
+	struct dentry *dentry = NULL;
 	struct lookup_res *lkup_res = NULL;
 	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
 	ret = path_lookup(path, lkup_res);
@@ -604,13 +616,14 @@ int fs_opendir(const char *path, struct fuse_file_info *fileInfo)
 		ret = -ENOENT;
 		goto out;
 	} else {
-		if (get_dentry_flag(lkup_res->dentry, D_type) != DIR_DENTRY) {
+		dentry = lkup_res->dentry;
+		if (get_dentry_flag(dentry, D_type) != DIR_DENTRY) {
 			ret = -ENOTDIR;
 			goto out;
 		}
-		fileInfo->fh = (uint64_t) lkup_res->dentry;
+		fileInfo->fh = (uint64_t) dentry;
 	#ifdef FS_DEBUG
-		printf("fs_opendir, open path = %s, inode = %ld\n", path, fileInfo->fh);
+		printf("fs_opendir, open path = %s, dentry addr = %ld\n", path, fileInfo->fh);
 	#endif
 	}
 out:
