@@ -128,8 +128,13 @@ struct dentry* fetch_dentry_from_unused_list()
 	struct unused_dentry *fetched_dentry = NULL;
 	fetched_dentry = fs_sb->unused_dentry_tail;
 	fs_sb->unused_dentry_tail = fetched_dentry->prev;
+	fetched_dentry->prev->next = NULL;
 	fetched_dentry->prev = NULL;
-	return fetched_dentry->dentry;
+	struct dentry *dentry = NULL;
+	dentry = fetched_dentry->dentry;
+	free(fetched_dentry);
+	fetched_dentry = NULL;
+	return dentry;
 }
 
 // only remove from tail
@@ -175,6 +180,24 @@ int charlen(char *str)
 	return len;
 }
 
+bool is_prefix(const char *prefix, const char *str)
+{
+	bool result = true;
+	int i;
+	int len_prefix = strlen(prefix);
+	int len_str = strlen(str);
+	if (len_prefix >= len_str) {
+		result = false;
+	} else {
+		for (i = 0; i < len_prefix; i++) {
+			if (prefix[i] != str[i]) {
+				result = false;
+				break;
+			}
+		}
+	}
+	return result;
+}
 
 void init_sb(char * mount_point, char * access_point)
 {
@@ -292,26 +315,29 @@ void fs_init(char * mount_point, char * access_point)
 	int fd = 0;
 	struct stat buf;
 	struct dentry *dentry = NULL;
+	int max_open_num = PRE_LOC_NUM;
 	
-	for (i = 1; i < PRE_LOC_NUM; i++) {
+	for (i = 1; i < max_open_num; i++) {
 		dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
 		memset(part, '\0', 8);
 		sprintf(part, "%d", i);
 		strcat(create_path, "/");
 		strcat(create_path, part);
 		create_path[charlen(create_path)] = '\0';
-		fd = open(create_path, O_CREAT);
+		fd = open(create_path, O_CREAT | O_RDWR);
 	#ifdef FS_DEBUG
 		printf("fs_init, create_path = %s, open fd = %d\n", create_path, fd);
 	#endif
 		if (unlikely(fd < 0)) {
-			printf("Init... part = %s not be created\n", part);
+			printf("Init... part = %s not be created, max num increase\n", part);
+			max_open_num++;
 			continue;
 			
 		}
 		stat(create_path, &buf);
 		// hook dentry
-		dentry->fid = i;    // name in lustre
+		//dentry->fid = i;    // name in lustre
+		dentry->fid = (uint32_t) fd;
 		dentry->inode = buf.st_ino;
 		dentry->flags = 0;
 		dentry->mode = buf.st_mode;
@@ -327,7 +353,7 @@ void fs_init(char * mount_point, char * access_point)
 
 		// prealloc for next
 		dirname(create_path);
-		close(fd);
+		//close(fd);
 	}
 }
 
@@ -417,14 +443,6 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 			break;
 	}
 	split_pos = (i > 0) ? i : 1;
-	char *p_path = (char *)calloc(1, split_pos + 1);
-	if (i < 0)
-		return -ENOENT;
-	int j;
-	for (j = 0; j < split_pos; ++j) {
-		p_path[j] = path[j];
-	}
-	p_path[j] = '\0';
 	char cur_name[DENTRY_NAME_SIZE];
 	memset(cur_name, '\0', DENTRY_NAME_SIZE);
 	if (split_pos == 1)
@@ -439,8 +457,12 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 #endif
 	struct lookup_res *lkup_res = NULL;
 	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
-	ret = path_lookup(p_path, lkup_res);
-	if (ret == ERROR) {
+	ret = path_lookup(path, lkup_res);
+	if (ret == SUCCESS) {
+		ret = -EEXIST;
+		goto out;
+	}
+	if (lkup_res->error == MISS_DIR) {
 		ret = -ENOENT;
 		goto out;
 	}
@@ -499,15 +521,6 @@ int fs_mkdir(const char *path, mode_t mode)
 			break;
 	}
 	split_pos = (i > 0) ? i : 1;
-	char *p_path = (char *)calloc(1, split_pos + 1);
-	if (i < 0)
-			return -ENOENT;  // no parent dir
-
-	int j;
-	for (j = 0; j < split_pos; ++j) {
-			p_path[j] = path[j];
-	}
-	p_path[j] = '\0';
 
 	char cur_name[DENTRY_NAME_SIZE];
 	memset(cur_name, '\0', DENTRY_NAME_SIZE);
@@ -515,12 +528,6 @@ int fs_mkdir(const char *path, mode_t mode)
 		memcpy(cur_name, &path[split_pos], len - split_pos);
 	else
 		memcpy(cur_name, &path[split_pos + 1], len - split_pos - 1);
-	/*
-	for (i = len + 1, j = 0; i < strlen(path); i++, j++) {
-		cur_name[j] = path[i];
-	}
-	cur_name[j] = '\0';
-	*/
 
 #ifdef FS_DEBUG
 	printf("fs_mkdir, will mkdir path = %s, cur_name = %s\n", path, cur_name);
@@ -528,8 +535,12 @@ int fs_mkdir(const char *path, mode_t mode)
 	struct dentry *dentry = NULL;
 	struct lookup_res *lkup_res = NULL;
 	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
-	ret = path_lookup(p_path, lkup_res);
-	if (ret == ERROR) {
+	ret = path_lookup(path, lkup_res);
+	if (ret == SUCCESS) {
+		ret = -EEXIST;
+		goto out;
+	}
+	if (lkup_res->error == MISS_DIR) {
 		ret = -ENOENT;
 		goto out;
 	}
@@ -539,7 +550,7 @@ int fs_mkdir(const char *path, mode_t mode)
 		goto out;
 	}
 
-	uint32_t p_inode = lkup_res->dentry->inode;
+	uint32_t p_inode = dentry->inode;
 	struct dentry *mkdir_dentry = NULL;
 	//mkdir_dentry = fetch_dentry_from_unused_list();
 	// for dir, should generate the new dentry
@@ -931,77 +942,47 @@ out:
 
 int fs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fileInfo)
 {
-	// a simple write implement
 	int ret = 0;
-	int fd = 0;
 	uint64_t addr = fileInfo->fh;
 	struct dentry *dentry = NULL;
 	dentry = (struct dentry *) addr;
+	int fd = (int)dentry->fid;
 
-	char part[8];
-	memset(part, '\0', 8);
-	sprintf(part, "%d", (int)dentry->fid);
-	char read_path[PATH_LEN];
-	memset(read_path, '\0', PATH_LEN);
-	strcpy(read_path, fs_sb->alloc_path);
-	strcat(read_path, "/");
-	strcat(read_path, ALLOCATED_PATH);
-	strcat(read_path, "/");
-	strcat(read_path, part);
-	//read_path[charlen(read_path)] = '\0';
-
-	fd = open(read_path, fileInfo->flags);
 	if (unlikely(fd < 0)) {
 		return -EBADF;
 	}
 	ret = pread(fd, buf, size, offset);
 #ifdef FS_DEBUG
-	printf("fs_read, read %d data from fid = %d in real path = %s\n", ret, (int)dentry->fid, read_path);
+	printf("fs_read, read %d data from fd = %d in path = %s\n", ret, fd, path);
 #endif
 	offset += size;
-	close(fd);
 	return ret;
 }
 
 int fs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fileInfo)
 {
-	// a simple write implement
 	int ret = 0;
-	int fd = 0;
 	uint64_t addr = fileInfo->fh;
 	struct dentry *dentry = NULL;
 	dentry = (struct dentry *) addr;
+	int fd = (int)dentry->fid;
 
-	char part[8];
-	memset(part, '\0', 8);
-	sprintf(part, "%d", (int)dentry->fid);
-	char write_path[PATH_LEN];
-	memset(write_path, '\0', PATH_LEN);
-	strcpy(write_path, fs_sb->alloc_path);
-	strcat(write_path, "/");
-	strcat(write_path, ALLOCATED_PATH);
-	strcat(write_path, "/");
-	strcat(write_path, part);
-	//write_path[charlen(write_path)] = '\0';
-
-	fd = open(write_path, fileInfo->flags);
 	if (unlikely(fd < 0)) {
 		return -EBADF;
 	}
 	ret = pwrite(fd, buf, size, offset);
 #ifdef FS_DEBUG
-	printf("fs_write, write %d data from fid = %d in real path = %s\n", ret, (int)dentry->fid, write_path);
+	printf("fs_write, write %d data from fd = %d in path = %s\n", ret, fd, path);
 #endif
 	dentry->size += size;
 	offset += size;
-	close(fd);
 	return ret;
 }
 
 int fs_release(const char *path, struct fuse_file_info *fileInfo)
 {
 #ifdef FS_DEBUG
-	printf("fs_release, path = %s has been close in write/read operation\n", path);
+	printf("fs_release, path = %s has been closed\n", path);
 #endif
 	return 0;
 }
@@ -1102,6 +1083,19 @@ int fs_unlink(const char * path)
 #endif
 	del(&(fs_sb->tree), rm_node);
 	remove_dentry_from_dirty_list(dentry);
+	if ((dentry->flags & S_IFLNK) == 1) {
+		free(dentry);
+		dentry = NULL;
+		ret = SUCCESS;
+		goto out;
+	}
+	// change the dentry
+	ftruncate(dentry->fid, 0);    // delete the file
+	dentry->size = 0;
+	dentry->flags = 0;
+	set_dentry_flag(dentry, D_type, FILE_DENTRY);
+	dentry->nlink = 0;
+	dentry->mtime = time(NULL);
 	add_dentry_to_unused_list(dentry);    // for file, need recycle
 	ret = SUCCESS;
 out:
@@ -1132,6 +1126,8 @@ int fs_symlink(const char * oldpath, const char * newpath)
 {
 	int ret = 0;
 	int i, j;
+	bool isprefix = true;
+	isprefix = is_prefix(fs_sb->mount_point, oldpath);
 	int len_oldpath = strlen(oldpath);
 	int len_mount = strlen(fs_sb->mount_point);
 	struct lookup_res *lkup_res = NULL;
@@ -1147,12 +1143,25 @@ int fs_symlink(const char * oldpath, const char * newpath)
 		ret = -ENOENT;
 		goto out;
 	}
-	int len = len_oldpath - len_mount;
+	int len = 0;
+	if (isprefix)
+		len = len_oldpath - len_mount;
+	else
+		len = len_oldpath;
 	char* old_real_path = (char *)calloc(1, len + 1);
-	for (i = len_mount, j = 0; i < len_oldpath; i++, j++) {
-		old_real_path[j] = oldpath[i];
+	if (isprefix) {
+		for (i = len_mount, j = 0; i < len_oldpath; i++, j++) {
+			old_real_path[j] = oldpath[i];
+		}
+	} else {
+		for (j = 0; j < len_oldpath; j++) {
+			old_real_path[j] = oldpath[j];
+		}
 	}
 	old_real_path[j] = '\0';
+#ifdef FS_DEBUG
+	printf("fs_symlink, oldpath = %s, old_real_path = %s, is prefix = %d\n", oldpath, old_real_path, isprefix);
+#endif
 	ret = path_lookup(old_real_path, old_lkup_res);
 	if (ret == ERROR) {
 		ret = -ENOENT;
@@ -1173,7 +1182,7 @@ int fs_symlink(const char * oldpath, const char * newpath)
 	uint32_t p_inode = lkup_res->dentry->inode;
 	struct dentry *create_dentry = NULL;
 	create_dentry = (struct dentry *)calloc(1, sizeof(struct dentry));
-	create_dentry->fid = 0;
+	create_dentry->fid = old_lkup_res->dentry->fid;
 	create_dentry->inode = old_lkup_res->dentry->inode;
 	create_dentry->flags = 0;
 	add_dentry_to_dirty_list(create_dentry);
@@ -1186,7 +1195,7 @@ int fs_symlink(const char * oldpath, const char * newpath)
 	create_dentry->gid = getgid();
 	old_lkup_res->dentry->nlink++;
 #ifdef FS_DEBUG
-	printf("fs_symlink, new link file inode = %d, linked name = %s\n", create_dentry->inode, dirname(old_real_path));
+	printf("fs_symlink, new link file inode = %d, linked name = %s\n", create_dentry->inode, basename(old_real_path));
 #endif
 
 	char create_key[MAP_KEY_LEN];
@@ -1231,22 +1240,37 @@ int fs_readlink(const char * path, char * buf, size_t size)
 
 	map_t *node;
 	struct dentry *find_dentry = NULL;
+	char *key = NULL;
+	int i, j;
 	for (node = map_first(&(fs_sb->tree)); node; node = map_next(&(node->node))) {
 		find_dentry = (struct dentry *)node->val;
-		if (find_dentry->inode == dentry->inode)
-			break;
+		if (S_ISLNK(find_dentry->mode))
+			continue;
+		if (get_dentry_flag(find_dentry, D_type) == DIR_DENTRY) {
+			if (find_dentry->inode == dentry->inode) {
+			#ifdef FS_DEBUG
+				printf("fs_readlink, find one is dir with inode = %d\n", (int)find_dentry->inode);
+			#endif
+				goto find_one;
+			}
+		} else if(get_dentry_flag(find_dentry, D_type) == FILE_DENTRY) {
+			if (find_dentry->fid == dentry->fid) {
+			#ifdef FS_DEBUG
+				printf("fs_readlink, find one is file with fid = %d\n", (int) find_dentry->fid);
+			#endif
+				goto find_one;
+			}
+		}
 	}
-	char *key = NULL;
+find_one:
 	key = node->key;
 #ifdef FS_DEBUG
 	printf("fs_readlink, find key = %s\n", key);
 #endif
-	int i;
 	for (i = 0; i < strlen(key); i++) {
 		if (key[i] == '#')
 			break;
 	}
-	int j;
 	for (i = i + 1, j = 0; i < strlen(key); i++, j++) {
 		buf[j] = key[i];
 	}
