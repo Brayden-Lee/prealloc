@@ -131,7 +131,11 @@ struct dentry* fetch_dentry_from_unused_list()
 	struct unused_dentry *fetched_dentry = NULL;
 	fetched_dentry = fs_sb->unused_dentry_tail;
 	fs_sb->unused_dentry_tail = fetched_dentry->prev;
-	fetched_dentry->prev->next = NULL;
+	if (fetched_dentry->prev == NULL) {    // the last one
+		fs_sb->unused_dentry_head = NULL;
+	} else {
+		fetched_dentry->prev->next = NULL;
+	}
 	fetched_dentry->prev = NULL;
 	struct dentry *dentry = NULL;
 	dentry = fetched_dentry->dentry;
@@ -297,6 +301,64 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 	return SUCCESS;
 }
 
+void batch_realloc()
+{
+	char create_path[PATH_LEN];
+	memset(create_path, '\0', PATH_LEN);
+	strcpy(create_path, fs_sb->alloc_path);
+	strcat(create_path, "/");
+	strcat(create_path, ALLOCATED_PATH);    // // like /mnt/lustre/pre_alloc
+
+	uint32_t i = 0;
+	char part[8];
+	int fd = 0;
+	struct stat buf;
+	struct dentry *dentry = NULL;
+	int max_open_num = PRE_LOC_NUM;
+
+	int realloc_count = 0;
+	char tmp[PATH_LEN];
+	for (i = 1; i <= max_open_num; i++) {
+		dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
+		memset(part, '\0', 8);
+		memset(tmp, '\0', PATH_LEN);
+		strcpy(tmp, create_path);
+		sprintf(part, "%d", (int)i);
+		strcat(tmp, "/");
+		strcat(tmp, part);
+		fd = open(tmp, O_CREAT | O_RDWR);
+	#ifdef FS_DEBUG
+		printf("batch_realloc..., create_path = %s, open fd = %d\n", tmp, fd);
+	#endif
+		if (unlikely(fd < 0)) {
+			printf("batch_realloc... part = %s not be created, max num increase\n", part);
+			max_open_num++;
+			continue;
+			
+		}
+		realloc_count++;
+		stat(tmp, &buf);
+		// hook dentry
+		//dentry->fid = i;    // name in lustre
+		dentry->fid = (uint32_t) fd;
+		dentry->inode = buf.st_ino;
+		dentry->flags = 0;
+		dentry->mode = buf.st_mode;
+		dentry->ctime = buf.st_ctime;
+		dentry->mtime = buf.st_mtime;
+		dentry->atime = buf.st_atime;
+		dentry->size = buf.st_size;
+		dentry->uid = buf.st_uid;
+		dentry->gid = buf.st_gid;
+		dentry->nlink = buf.st_nlink;
+
+		add_dentry_to_unused_list(dentry);
+	}
+#ifdef FS_DEBUG
+	printf("batch_realloc, %d number file are realloced\n", realloc_count);
+#endif
+}
+
 void fs_init(char * mount_point, char * access_point)
 {
 #ifdef FS_DEBUG
@@ -323,7 +385,7 @@ void fs_init(char * mount_point, char * access_point)
 
 	char tmp[PATH_LEN];
 	
-	for (i = 1; i < max_open_num; i++) {
+	for (i = 1; i <= max_open_num; i++) {
 		dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
 		memset(part, '\0', 8);
 		memset(tmp, '\0', PATH_LEN);
@@ -406,8 +468,16 @@ int fs_open(const char *path, struct fuse_file_info *fileInfo)
 		struct dentry *create_dentry = NULL;
 		create_dentry = fetch_dentry_from_unused_list();
 		if (create_dentry == NULL) {
-			ret = -ENFILE;    // not enough, need pre-alloc
-			goto out;
+			if (REALLOC_ENABLE) {
+			#ifdef FS_DEBUG
+				printf("fs_open(create), begin to batch_realloc ...\n");
+			#endif
+				batch_realloc();
+				create_dentry = fetch_dentry_from_unused_list();
+			} else {
+				ret = -ENFILE;    // not enough, need pre-alloc
+				goto out;
+			}
 		}
 	#ifdef FS_DEBUG
 		printf("fs_open(create), fetch dentry fid = %d, inode = %d\n", (int)create_dentry->fid, (int)create_dentry->inode);
@@ -485,8 +555,16 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 	struct dentry *create_dentry = NULL;
 	create_dentry = fetch_dentry_from_unused_list();
 	if (create_dentry == NULL) {
-		ret = -ENFILE;    // not enough, need pre-alloc
-		goto out;
+		if (REALLOC_ENABLE) {
+		#ifdef FS_DEBUG
+			printf("fs_create, begin to batch_realloc ...\n");
+		#endif
+			batch_realloc();
+			create_dentry = fetch_dentry_from_unused_list();
+		} else {
+			ret = -ENFILE;    // not enough, need pre-alloc
+			goto out;
+		}
 	}
 #ifdef FS_DEBUG
 	printf("fs_create, fetch dentry fid = %d, inode = %d\n", (int)create_dentry->fid, (int)create_dentry->inode);
@@ -1300,5 +1378,29 @@ out:
 
 int fs_destroy()
 {
+	int file_count = 0;
+	struct unused_dentry *unused = fs_sb->unused_dentry_tail;
+	struct unused_dentry *p = NULL;
+	struct dirty_dentry *dirty = fs_sb->dirty_dentry_tail;
+	struct dirty_dentry *q = NULL;
+	while (unused != NULL) {
+		file_count++;
+		close(unused->dentry->fid);
+		p = unused;
+		unused = p->prev;
+		free(p);
+		p = NULL;
+	}
 
+	while (dirty != NULL) {
+		if (get_dentry_flag(dirty->dentry, D_type) == FILE_DENTRY) {
+			file_count++;
+			close(dirty->dentry->fid);
+		}
+		q = dirty;
+		dirty = q->prev;
+		free(q);
+		q = NULL;
+	}
+	printf("fs_destroy, file count = %d have been closed\n", file_count);
 }

@@ -29,6 +29,7 @@
 #define MISS_FILE 1
 #define MISS_DIR 2
 
+#define REALLOC_ENABLE true
 
 // for DEBUG
 #define FS_DEBUG
@@ -98,6 +99,7 @@ int remove_dentry_from_unused_list(struct dentry *dentry);
 int charlen(char *str);
 void init_sb(char * mount_point, char * access_point);
 int path_lookup(const char *path, struct lookup_res *lkup_res);
+void batch_realloc();
 
 // operation interface api
 void fs_init(char * mount_point, char * access_point);
