@@ -359,6 +359,77 @@ void batch_realloc()
 #endif
 }
 
+int map_tree(char * dir_parent)
+{
+	char tmp_1[PATH_LEN];
+	memset(tmp_1, '\0', PATH_LEN);
+
+	char tmp_2[PATH_LEN];
+	memset(tmp_2, '\0', PATH_LEN);
+	char tmp_3[PATH_LEN];
+	memset(tmp_3, '\0', PATH_LEN);
+
+	uint32_t i = 0;
+	uint32_t j = 0;
+	uint32_t k = 0;
+	int count = 0;
+	struct dentry *dentry = NULL;
+	char part_1[8];
+	char part_2[8];
+	char part_3[8];
+	int fd = 0;
+	struct stat buf;
+	for (i = 0; i < 128; i++) {
+		memset(tmp_1, '\0', PATH_LEN);
+		strcpy(tmp_1, dir_parent);
+		memset(part_1, '\0', 8);
+		sprintf(part_1, "%d", (int)i);
+		strcat(tmp_1, "/");
+		strcat(tmp_1, part_1);
+		for (j = 0; j < 128; j++) {
+			memset(tmp_2, '\0', PATH_LEN);
+			strcpy(tmp_2, tmp_1);
+			memset(part_2, '\0', 8);
+			sprintf(part_2, "%d", (int)j);
+			strcat(tmp_2, "/");
+			strcat(tmp_2, part_2);
+			for (k = 1; k <= EACH_SUBDIR; k++) {
+				dentry = (struct dentry *) calloc(1, sizeof(struct dentry));
+				memset(tmp_3, '\0', PATH_LEN);
+				strcpy(tmp_3, tmp_2);
+				memset(part_3, '\0', 8);
+				sprintf(part_3, "%d", (int)k);
+				strcat(tmp_3, "/");
+				strcat(tmp_3, part_3);
+				fd = open(tmp_3, O_CREAT | O_RDWR);
+			#ifdef FS_DEBUG
+				printf("fs_init, create_path = %s, open fd = %d\n", tmp_3, fd);
+			#endif
+				if (unlikely(fd < 0)) {
+					printf("Init... part1 = %s, part2 = %s, part3 = %s not be created, max num increase\n", part_1, part_2, part_3);
+					printf("line = %d, func = %s, errno = %d, errmsg = %s\n", __LINE__, __FUNCTION__, errno, strerror(errno));
+					return -1;
+					
+				}
+				stat(tmp_3, &buf);
+				dentry->fid = (uint32_t) fd;
+				dentry->inode = buf.st_ino;
+				dentry->flags = 0;
+				dentry->mode = buf.st_mode;
+				dentry->ctime = buf.st_ctime;
+				dentry->mtime = buf.st_mtime;
+				dentry->atime = buf.st_atime;
+				dentry->size = buf.st_size;
+				dentry->uid = buf.st_uid;
+				dentry->gid = buf.st_gid;
+				dentry->nlink = buf.st_nlink;
+				add_dentry_to_unused_list(dentry);
+			}
+		}
+	}
+	return 0;
+}
+
 void fs_init(char * mount_point, char * access_point)
 {
 #ifdef FS_DEBUG
@@ -372,6 +443,8 @@ void fs_init(char * mount_point, char * access_point)
 	strcat(create_path, "/");
 	strcat(create_path, ALLOCATED_PATH);    // // like /mnt/lustre/pre_alloc
 
+	map_tree(create_path);
+	/*
 	if (access(create_path, F_OK) != 0) {
 		mkdir(create_path, O_CREAT);
 	}
@@ -382,7 +455,7 @@ void fs_init(char * mount_point, char * access_point)
 	struct stat buf;
 	struct dentry *dentry = NULL;
 	int max_open_num = PRE_LOC_NUM;
-
+	
 	char tmp[PATH_LEN];
 	
 	for (i = 1; i <= max_open_num; i++) {
@@ -425,6 +498,7 @@ void fs_init(char * mount_point, char * access_point)
 		//dirname(create_path);
 		//close(fd);
 	}
+	*/
 }
 
 int fs_open(const char *path, struct fuse_file_info *fileInfo)
