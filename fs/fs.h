@@ -12,7 +12,8 @@
 #define NORMAL_FILE 0
 
 #define PRE_LOC_NUM 1000
-#define EACH_SUBDIR 20
+#define EACH_SUBDIR 13
+#define MAX_COUNT_LIMIT 1010
 #define PATH_LEN 64
 #define DENTRY_NAME_SIZE 32
 #define ALLOCATED_PATH "pre_alloc"

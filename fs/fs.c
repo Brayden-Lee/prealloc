@@ -379,6 +379,7 @@ int map_tree(char * dir_parent)
 	char part_3[8];
 	int fd = 0;
 	struct stat buf;
+	int max_count = 0;
 	for (i = 0; i < 128; i++) {
 		memset(tmp_1, '\0', PATH_LEN);
 		strcpy(tmp_1, dir_parent);
@@ -424,6 +425,9 @@ int map_tree(char * dir_parent)
 				dentry->gid = buf.st_gid;
 				dentry->nlink = buf.st_nlink;
 				add_dentry_to_unused_list(dentry);
+				max_count++;
+				if (max_count > MAX_COUNT_LIMIT)
+					return 0;
 			}
 		}
 	}
@@ -1271,7 +1275,26 @@ out:
 
 int fs_chmod(const char * path, mode_t mode)
 {
-	return -ENOSYS;
+	int ret = 0;
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(path, lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+#ifdef FS_DEBUG
+	printf("fs_chmod, chmod path = %s, its inode = %d\n", path, (int)dentry->inode);
+#endif
+	dentry->mode = mode;
+	dentry->atime = time(NULL);
+	ret = 0;
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;
 }
 
 int fs_chown(const char * path, uid_t owner, gid_t group)
