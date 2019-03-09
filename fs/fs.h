@@ -4,6 +4,8 @@
 #define FUSE_USE_VERSION 30
 #include <fuse.h>
 #include <string.h>
+#include <pthread.h>
+#include <sys/statvfs.h>
 #include "../tools/map.h"
 
 #define DIR_DENTRY 0
@@ -14,13 +16,13 @@
 #define PRE_LOC_NUM 1000
 #define EACH_SUBDIR 13
 #define MAX_COUNT_LIMIT 1010
-#define PATH_LEN 64
-#define DENTRY_NAME_SIZE 32
+#define PATH_LEN 128
+#define DENTRY_NAME_SIZE 80
 #define ALLOCATED_PATH "pre_alloc"
 
 // map config
 #define MAP_KEY_DELIMIT "#"
-#define MAP_KEY_LEN 40
+#define MAP_KEY_LEN 80
 #define MAP_PRE_KEY_LEN 10    // inode +'#'
 
 
@@ -76,6 +78,10 @@ struct fs_super {
 	struct unused_dentry *unused_dentry_tail;
 	root_t tree;
 	uint32_t curr_dir_id;
+	pthread_mutex_t dir_id_lock;
+	pthread_rwlock_t dirty_list_rwlock;
+	pthread_rwlock_t unused_list_rwlock;
+	pthread_rwlock_t tree_rwlock;
 };
 
 enum dentryflags {
@@ -145,6 +151,8 @@ int fs_access(const char * path, int amode);
 int fs_symlink(const char * oldpath, const char * newpath);
 
 int fs_readlink(const char * path, char * buf, size_t size);
+
+int fs_statfs(const char *path, struct statvfs *statv);
 
 int fs_destroy();
 

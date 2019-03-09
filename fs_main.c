@@ -107,6 +107,11 @@ int fuse_readlink(const char * path, char * buf, size_t size)
 	return fs_readlink(path, buf, size);
 }
 
+int fuse_statfs(const char *path, struct statvfs *statv)
+{
+	return fs_statfs(path, statv);
+}
+
 static struct fuse_operations fuse_ops =
 {
     .open = fuse_open,
@@ -129,6 +134,7 @@ static struct fuse_operations fuse_ops =
     .access = fuse_access,
     .symlink = fuse_symlink,
     .readlink = fuse_readlink,
+    .statfs = fuse_statfs,
 };
 
 static void usage(void)

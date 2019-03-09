@@ -15,7 +15,9 @@ struct fs_super *fs_sb = NULL;
 
 uint32_t generate_unique_id()
 {
+	pthread_mutex_lock(&(fs_sb->dir_id_lock));
 	fs_sb->curr_dir_id++;
+	pthread_mutex_unlock(&(fs_sb->dir_id_lock));
 	return fs_sb->curr_dir_id;
 }
 
@@ -257,6 +259,7 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 
 	s = 0;
 	last_pos = 0;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
 	while (s <= len) {
 		if (s == len || path[s] == '/') {
 			memset(dentry_name, '\0', DENTRY_NAME_SIZE);
@@ -283,6 +286,7 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 				} else {
 					lkup_res->error = MISS_DIR;
 				}
+				pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 				return ERROR;
 			}
 			lkup_res->p_inode = cur_inode;
@@ -298,6 +302,7 @@ int path_lookup(const char *path, struct lookup_res *lkup_res)
 	}
 	lkup_res->dentry = find_dentry;
 	lkup_res->error = LOOKUP_SUCCESS;
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 	return SUCCESS;
 }
 
@@ -434,6 +439,22 @@ int map_tree(char * dir_parent)
 	return 0;
 }
 
+void init_lock()
+{
+	pthread_mutex_init(&(fs_sb->dir_id_lock), NULL);
+	pthread_rwlock_init(&(fs_sb->dirty_list_rwlock), NULL);
+	pthread_rwlock_init(&(fs_sb->unused_list_rwlock), NULL);
+	pthread_rwlock_init(&(fs_sb->tree_rwlock), NULL);
+}
+
+void destroy_lock()
+{
+	pthread_mutex_destroy(&(fs_sb->dir_id_lock));
+	pthread_rwlock_destroy(&(fs_sb->dirty_list_rwlock));
+	pthread_rwlock_destroy(&(fs_sb->unused_list_rwlock));
+	pthread_rwlock_destroy(&(fs_sb->tree_rwlock));
+}
+
 void fs_init(char * mount_point, char * access_point)
 {
 #ifdef FS_DEBUG
@@ -448,6 +469,7 @@ void fs_init(char * mount_point, char * access_point)
 	strcat(create_path, ALLOCATED_PATH);    // // like /mnt/lustre/pre_alloc
 
 	map_tree(create_path);
+	init_lock();
 	/*
 	if (access(create_path, F_OK) != 0) {
 		mkdir(create_path, O_CREAT);
@@ -544,7 +566,9 @@ int fs_open(const char *path, struct fuse_file_info *fileInfo)
 
 		uint32_t p_inode = dentry->inode;
 		struct dentry *create_dentry = NULL;
+		pthread_rwlock_wrlock(&(fs_sb->unused_list_rwlock));
 		create_dentry = fetch_dentry_from_unused_list();
+		pthread_rwlock_unlock(&(fs_sb->unused_list_rwlock));
 		if (create_dentry == NULL) {
 			if (REALLOC_ENABLE) {
 			#ifdef FS_DEBUG
@@ -560,7 +584,9 @@ int fs_open(const char *path, struct fuse_file_info *fileInfo)
 	#ifdef FS_DEBUG
 		printf("fs_open(create), fetch dentry fid = %d, inode = %d\n", (int)create_dentry->fid, (int)create_dentry->inode);
 	#endif
+		pthread_rwlock_wrlock(&(fs_sb->unused_list_rwlock));
 		add_dentry_to_dirty_list(create_dentry);
+		pthread_rwlock_unlock(&(fs_sb->unused_list_rwlock));
 		set_dentry_flag(create_dentry, D_type, FILE_DENTRY);
 		create_dentry->mode = S_IFREG | 0644;
 		// init the new dentry...
@@ -571,7 +597,9 @@ int fs_open(const char *path, struct fuse_file_info *fileInfo)
 		strcat(create_key, cur_name);
 		//create_key[charlen(create_key)] = '\0';
 		uint64_t addr = (uint64_t) create_dentry;
+		pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
 		ret = put(&(fs_sb->tree), create_key, addr);
+		pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 	#ifdef FS_DEBUG
 		if (ret == 1) {
 			printf("fs_open(create), put key = %s, its parent dentry inode = %d in the map!\n", create_key, (int)p_inode);
@@ -631,7 +659,9 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 	}
 	uint32_t p_inode = lkup_res->dentry->inode;
 	struct dentry *create_dentry = NULL;
+	pthread_rwlock_wrlock(&(fs_sb->unused_list_rwlock));
 	create_dentry = fetch_dentry_from_unused_list();
+	pthread_rwlock_unlock(&(fs_sb->unused_list_rwlock));
 	if (create_dentry == NULL) {
 		if (REALLOC_ENABLE) {
 		#ifdef FS_DEBUG
@@ -647,7 +677,9 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 #ifdef FS_DEBUG
 	printf("fs_create, fetch dentry fid = %d, inode = %d\n", (int)create_dentry->fid, (int)create_dentry->inode);
 #endif
+	pthread_rwlock_wrlock(&(fs_sb->unused_list_rwlock));
 	add_dentry_to_dirty_list(create_dentry);
+	pthread_rwlock_unlock(&(fs_sb->unused_list_rwlock));
 	set_dentry_flag(create_dentry, D_type, FILE_DENTRY);
 	create_dentry->mode = S_IFREG | 0644;
 	// init the new dentry...
@@ -658,7 +690,9 @@ int fs_create(const char * path, mode_t mode, struct fuse_file_info * fileInfo)
 	strcat(create_key, cur_name);
 	//create_key[charlen(create_key)] = '\0';
 	uint64_t addr = (uint64_t) create_dentry;
+	pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
 	ret = put(&(fs_sb->tree), create_key, addr);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 #ifdef FS_DEBUG
 	if (ret == 1) {
 		printf("fs_create, put key = %s, its parent dentry inode = %d in the map!\n", create_key, (int)p_inode);
@@ -737,7 +771,9 @@ int fs_mkdir(const char *path, mode_t mode)
 #ifdef FS_DEBUG
 	printf("fs_mkdir, create new dir dentry id = %d, name = %s\n", (int)mkdir_dentry->inode, cur_name);
 #endif
+	pthread_rwlock_wrlock(&(fs_sb->dirty_list_rwlock));
 	add_dentry_to_dirty_list(mkdir_dentry);	
+	pthread_rwlock_unlock(&(fs_sb->dirty_list_rwlock));
 	// init the new dentry...
 	char mkdir_key[MAP_KEY_LEN];
 	memset(mkdir_key, '\0', MAP_KEY_LEN);
@@ -745,7 +781,9 @@ int fs_mkdir(const char *path, mode_t mode)
 	strcat(mkdir_key, MAP_KEY_DELIMIT);
 	strcat(mkdir_key, cur_name);
 	uint64_t addr = (uint64_t) mkdir_dentry;
+	pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
 	ret = put(&(fs_sb->tree), mkdir_key, addr);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 #ifdef FS_DEBUG
 	if (ret == 1) {
 		printf("fs_mkdir, put key = %s, its parent dentry inode = %d in the map!\n", mkdir_key, (int)p_inode);
@@ -823,6 +861,7 @@ int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset
 	map_t *node;
 	char *key = NULL;
 	bool match = true;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
 	for (node = map_first(&(fs_sb->tree)); node; node = map_next(&(node->node))) {
 		key = node->key;
 		for (i = 0; i < len; i++) {
@@ -838,12 +877,14 @@ int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset
 			matched_name[j] = '\0';
 			if (filler(buf, matched_name, NULL, 0) < 0) {
 				printf("filler %s error in func = %s\n", matched_name, __FUNCTION__);
+				pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 				return ERROR;
 			}
 		} else {
 			match = true;
 		}
 	}
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 	return SUCCESS;
 }
 
@@ -929,7 +970,9 @@ int fs_rmdir(const char *path)
 	strcat(rm_key, MAP_KEY_DELIMIT);
 	strcat(rm_key, cur_name);
 	map_t *rm_node;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
 	rm_node = get(&(fs_sb->tree), rm_key);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 	if (rm_node == NULL) {
 		ret = -ENOENT;
 		goto out;
@@ -952,6 +995,7 @@ int fs_rmdir(const char *path)
 	map_t *node;
 	char *key = NULL;
 	bool match = true;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
 	// if you do not check the child, you can rm all the subtree
 	for (node = map_first(&(fs_sb->tree)); node; node = map_next(&(node->node))) {
 		key = node->key;
@@ -966,16 +1010,22 @@ int fs_rmdir(const char *path)
 			printf("fs_rmdir, find sub dir with key = %s\n", key);
 		#endif
 			ret = -ENOTEMPTY;
+			pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 			goto out;
 		}
 		match = true;
 	}
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 
 #ifdef FS_DEBUG
 	printf("fs_rmdir, will del node and free dir dentry, key = %s\n", rm_key);
 #endif
+	pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
 	del(&(fs_sb->tree), rm_node);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+	pthread_rwlock_wrlock(&(fs_sb->dirty_list_rwlock));
 	remove_dentry_from_dirty_list(dentry);
+	pthread_rwlock_unlock(&(fs_sb->dirty_list_rwlock));
 	free(dentry);
 	dentry = NULL;
 	ret = SUCCESS;
@@ -1028,11 +1078,15 @@ int changename(struct lookup_res *lkup_res, const char *path, const char *newpat
 	printf("changename, old_key = %s, new_key = %s\n", old_key, new_key);
 #endif
 	map_t *rm_node;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
 	rm_node = get(&(fs_sb->tree), old_key);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 	if (rm_node == NULL)
 		return -1;
+	pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
 	del(&(fs_sb->tree), rm_node);
 	put(&(fs_sb->tree), new_key, addr);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 	return 0;
 }
 
@@ -1236,7 +1290,9 @@ int fs_unlink(const char * path)
 	strcat(rm_key, MAP_KEY_DELIMIT);
 	strcat(rm_key, cur_name);
 	map_t *rm_node;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
 	rm_node = get(&(fs_sb->tree), rm_key);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 	if (rm_node == NULL) {
 		ret = -ENOENT;
 		goto out;
@@ -1250,8 +1306,12 @@ int fs_unlink(const char * path)
 #ifdef FS_DEBUG
 	printf("fs_unlink, will del node and add a unused dentry, key = %s\n", rm_key);
 #endif
+    pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
 	del(&(fs_sb->tree), rm_node);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+	pthread_rwlock_wrlock(&(fs_sb->dirty_list_rwlock));
 	remove_dentry_from_dirty_list(dentry);
+	pthread_rwlock_unlock(&(fs_sb->dirty_list_rwlock));
 	if ((dentry->flags & S_IFLNK) == 1) {
 		free(dentry);
 		dentry = NULL;
@@ -1265,7 +1325,9 @@ int fs_unlink(const char * path)
 	set_dentry_flag(dentry, D_type, FILE_DENTRY);
 	dentry->nlink = 0;
 	dentry->mtime = time(NULL);
+	pthread_rwlock_wrlock(&(fs_sb->unused_list_rwlock));
 	add_dentry_to_unused_list(dentry);    // for file, need recycle
+	pthread_rwlock_unlock(&(fs_sb->unused_list_rwlock));
 	ret = SUCCESS;
 out:
 	free(lkup_res);
@@ -1373,7 +1435,9 @@ int fs_symlink(const char * oldpath, const char * newpath)
 	create_dentry->fid = old_lkup_res->dentry->fid;
 	create_dentry->inode = old_lkup_res->dentry->inode;
 	create_dentry->flags = 0;
+	pthread_rwlock_wrlock(&(fs_sb->dirty_list_rwlock));
 	add_dentry_to_dirty_list(create_dentry);
+	pthread_rwlock_unlock(&(fs_sb->dirty_list_rwlock));
 	set_dentry_flag(create_dentry, D_type, FILE_DENTRY);
 	create_dentry->mode = S_IFLNK | 0777;
 	create_dentry->ctime = time(NULL);
@@ -1392,7 +1456,9 @@ int fs_symlink(const char * oldpath, const char * newpath)
 	strcat(create_key, MAP_KEY_DELIMIT);
 	strcat(create_key, cur_name);
 	uint64_t addr = (uint64_t) create_dentry;
+	pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
 	ret = put(&(fs_sb->tree), create_key, addr);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 #ifdef FS_DEBUG
 	if (ret == 1) {
 		printf("fs_create, put key = %s, its parent dentry inode = %d in the map!\n", create_key, (int)p_inode);
@@ -1430,6 +1496,7 @@ int fs_readlink(const char * path, char * buf, size_t size)
 	struct dentry *find_dentry = NULL;
 	char *key = NULL;
 	int i, j;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
 	for (node = map_first(&(fs_sb->tree)); node; node = map_next(&(node->node))) {
 		find_dentry = (struct dentry *)node->val;
 		if (S_ISLNK(find_dentry->mode))
@@ -1439,6 +1506,7 @@ int fs_readlink(const char * path, char * buf, size_t size)
 			#ifdef FS_DEBUG
 				printf("fs_readlink, find one is dir with inode = %d\n", (int)find_dentry->inode);
 			#endif
+				pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 				goto find_one;
 			}
 		} else if(get_dentry_flag(find_dentry, D_type) == FILE_DENTRY) {
@@ -1446,10 +1514,12 @@ int fs_readlink(const char * path, char * buf, size_t size)
 			#ifdef FS_DEBUG
 				printf("fs_readlink, find one is file with fid = %d\n", (int) find_dentry->fid);
 			#endif
+				pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 				goto find_one;
 			}
 		}
 	}
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
 find_one:
 	key = node->key;
 #ifdef FS_DEBUG
@@ -1471,6 +1541,11 @@ out:
 	free(lkup_res);
 	lkup_res = NULL;
 	return ret;
+}
+
+int fs_statfs(const char *path, struct statvfs *statv)
+{
+	return statvfs(fs_sb->alloc_path, statv);
 }
 
 int fs_destroy()
@@ -1499,5 +1574,6 @@ int fs_destroy()
 		free(q);
 		q = NULL;
 	}
+	destroy_lock();
 	printf("fs_destroy, file count = %d have been closed\n", file_count);
 }
