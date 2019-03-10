@@ -1035,6 +1035,122 @@ out:
 	return ret;
 }
 
+int movename(struct lookup_res *lkup_res, struct lookup_res *new_lkup_res, const char *path, const char *newpath)
+{
+	int p_inode = lkup_res->p_inode;
+	char cur_name[DENTRY_NAME_SIZE];
+	char new_cur_name[DENTRY_NAME_SIZE];
+	memset(cur_name, '\0', DENTRY_NAME_SIZE);
+	memset(new_cur_name, '\0', DENTRY_NAME_SIZE);
+	int i, j;
+	int len = strlen(path);
+	int new_len = strlen(newpath);
+	for (i = len - 1; i >= 0; i--) {
+		if (path[i] == '/')
+			break;
+	}
+	if (i == 0)
+		memcpy(cur_name, &path[1], len);
+	else
+		memcpy(cur_name, &path[i + 1], len - i - 1);
+	for (j = new_len - 1; j >= 0; j--) {
+		if (newpath[j] == '/')
+			break;
+	}
+	if (j == 0)
+		memcpy(new_cur_name, &newpath[1], new_len);
+	else
+		memcpy(new_cur_name, &newpath[j + 1], new_len - j - 1);
+	char old_key[MAP_KEY_LEN];
+	char new_key[MAP_KEY_LEN];
+	memset(old_key, '\0', MAP_KEY_LEN);
+	memset(new_key, '\0', MAP_KEY_LEN);
+	sprintf(old_key, "%d", p_inode);
+	strcat(old_key, MAP_KEY_DELIMIT);
+	strcat(old_key, cur_name);
+
+	struct dentry *dentry = lkup_res->dentry;
+	struct dentry *pdentry = new_lkup_res->dentry;
+	p_inode = pdentry->inode;
+	sprintf(new_key, "%d", p_inode);
+	strcat(new_key, MAP_KEY_DELIMIT);
+	strcat(new_key, cur_name);
+
+	map_t *rm_node;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
+	rm_node = get(&(fs_sb->tree), old_key);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+	if (rm_node == NULL) {
+		return -1;
+	}
+    pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
+	del(&(fs_sb->tree), rm_node);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+	uint64_t addr = (uint64_t) dentry;
+	pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
+	put(&(fs_sb->tree), new_key, addr);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+	return 0;
+}
+
+int chgname(struct lookup_res *lkup_res, struct lookup_res *new_lkup_res, const char *path, const char *newpath)
+{
+	int p_inode = lkup_res->p_inode;
+	int i, j;
+	char cur_name[DENTRY_NAME_SIZE];
+	char new_cur_name[DENTRY_NAME_SIZE];
+	memset(cur_name, '\0', DENTRY_NAME_SIZE);
+	memset(new_cur_name, '\0', DENTRY_NAME_SIZE);
+	int len = strlen(path);
+	int new_len = strlen(newpath);
+	for (i = len - 1; i >= 0; i--) {
+		if (path[i] == '/')
+			break;
+	}
+	if (i == 0)
+		memcpy(cur_name, &path[1], len);
+	else
+		memcpy(cur_name, &path[i + 1], len - i - 1);
+	for (j = new_len - 1; j >= 0; j--) {
+		if (newpath[j] == '/')
+			break;
+	}
+	if (j == 0)
+		memcpy(new_cur_name, &newpath[1], new_len);
+	else
+		memcpy(new_cur_name, &newpath[j + 1], new_len - j - 1);
+	char old_key[MAP_KEY_LEN];
+	char new_key[MAP_KEY_LEN];
+	memset(old_key, '\0', MAP_KEY_LEN);
+	memset(new_key, '\0', MAP_KEY_LEN);
+	sprintf(old_key, "%d", p_inode);
+	strcat(old_key, MAP_KEY_DELIMIT);
+	strcat(old_key, cur_name);
+
+	struct dentry *dentry = lkup_res->dentry;
+	struct dentry *pdentry = new_lkup_res->dentry;
+	p_inode = pdentry->inode;
+	sprintf(new_key, "%d", p_inode);
+	strcat(new_key, MAP_KEY_DELIMIT);
+	strcat(new_key, new_cur_name);
+
+	map_t *rm_node;
+	pthread_rwlock_rdlock(&(fs_sb->tree_rwlock));
+	rm_node = get(&(fs_sb->tree), old_key);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+	if (rm_node == NULL) {
+		return -1;
+	}
+    pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
+	del(&(fs_sb->tree), rm_node);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+	uint64_t addr = (uint64_t) dentry;
+	pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
+	put(&(fs_sb->tree), new_key, addr);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+	return 0;
+}
+
 int changename(struct lookup_res *lkup_res, const char *path, const char *newpath)
 {
 	int p_inode = lkup_res->p_inode;
@@ -1098,6 +1214,7 @@ int fs_rename(const char *path, const char *newpath)
 	int len_newpath = strlen(newpath);
 	struct lookup_res *lkup_res = NULL;
 	struct lookup_res *new_lkup_res = NULL;
+	bool ismove = false;
 	if (strcmp(path, newpath) == 0)
 		return 0;
 	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
@@ -1109,7 +1226,12 @@ int fs_rename(const char *path, const char *newpath)
 	}
 	ret = path_lookup(newpath, new_lkup_res);
 	if (ret == SUCCESS) {
-		ret = -EEXIST;
+		if (get_dentry_flag(new_lkup_res->dentry, D_type) == FILE_DENTRY) {
+			ret = -EEXIST;
+			goto out;
+		}
+		ismove = true;
+		ret = movename(lkup_res, new_lkup_res, path, newpath);
 		goto out;
 	}
 	if (new_lkup_res->error == MISS_DIR) {
@@ -1119,7 +1241,9 @@ int fs_rename(const char *path, const char *newpath)
 #ifdef FS_DEBUG
 	printf("fs_rename, path = %s, newpath = %s\n", path, newpath);
 #endif
-	bool ismove = false;
+
+	ret = chgname(lkup_res, new_lkup_res, path, newpath);
+/*
 	for (i = len_path - 1; i >= 0; i--) {
 		if (path[i] == '/')
 			break;
@@ -1155,6 +1279,7 @@ int fs_rename(const char *path, const char *newpath)
 		ret = -ENOSYS;
 	else
 		ret = changename(lkup_res, path, newpath);
+	*/
 out:
 	free(lkup_res);
 	free(new_lkup_res);
