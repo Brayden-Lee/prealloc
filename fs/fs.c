@@ -218,6 +218,7 @@ void init_sb(char * mount_point, char * access_point)
 	fs_sb->unused_dentry_head = NULL;
 	fs_sb->unused_dentry_tail = NULL;
 	fs_sb->tree = RB_ROOT;
+	fs_sb->link_tree = RB_ROOT;
 	fs_sb->curr_dir_id = 1;
 
 	// root should in map first!
@@ -1438,6 +1439,8 @@ int fs_unlink(const char * path)
 	remove_dentry_from_dirty_list(dentry);
 	pthread_rwlock_unlock(&(fs_sb->dirty_list_rwlock));
 	if ((dentry->flags & S_IFLNK) == 1) {
+		rm_node = get(&(fs_sb->link_tree), rm_key);
+		del(&(fs_sb->link_tree), rm_node);
 		free(dentry);
 		dentry = NULL;
 		ret = SUCCESS;
@@ -1497,7 +1500,131 @@ int fs_access(const char * path, int amode)
 	return 0;
 }
 
-int fs_symlink(const char * oldpath, const char * newpath)
+int fs_symlink(const char *oldpath, const char *newpath)
+{
+	int ret = 0;
+	int i, j;
+	bool isprefix = true;
+	isprefix = is_prefix(fs_sb->mount_point, oldpath);
+	int len_oldpath = strlen(oldpath);
+	int len_mount = strlen(fs_sb->mount_point);
+	struct lookup_res *lkup_res = NULL;
+	struct lookup_res *old_lkup_res = NULL;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	old_lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(newpath, lkup_res);
+	if (lkup_res->error != MISS_FILE) {
+		ret = -EEXIST;
+		goto out;
+	}
+	if (lkup_res->error == MISS_DIR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	if (get_dentry_flag(lkup_res->dentry, D_type) != DIR_DENTRY) {
+		ret = -ENOTDIR;
+		goto out;
+	}
+	int len = 0;
+	if (isprefix)
+		len = len_oldpath - len_mount;
+	else
+		len = len_oldpath;
+	char* old_real_path = (char *)calloc(1, len + 1);
+	if (isprefix) {
+		for (i = len_mount, j = 0; i < len_oldpath; i++, j++) {
+			old_real_path[j] = oldpath[i];
+		}
+	} else {
+		ret = -ENOSYS;    // not support relative path
+		goto out;
+		/*
+		for (j = 0; j < len_oldpath; j++) {
+			old_real_path[j] = oldpath[j];
+		}
+		*/
+	}
+	old_real_path[j] = '\0';
+#ifdef FS_DEBUG
+	printf("fs_symlink, oldpath = %s, old_real_path = %s, is prefix = %d\n", oldpath, old_real_path, isprefix);
+#endif
+	ret = path_lookup(old_real_path, old_lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	char cur_name[DENTRY_NAME_SIZE];
+	memset(cur_name, '\0', DENTRY_NAME_SIZE);
+	int split_pos = 0;
+	for (i = strlen(newpath) - 1; i >= 0; --i) {
+		if (newpath[i] == '/')
+			break;
+	}
+	split_pos = (i > 0) ? i : 1;
+	if (split_pos == 1)
+		memcpy(cur_name, &newpath[split_pos], strlen(newpath) - split_pos);
+	else
+		memcpy(cur_name, &newpath[split_pos + 1], strlen(newpath) - split_pos - 1);
+
+// dentry tree
+	uint32_t p_inode = lkup_res->dentry->inode;
+	struct dentry *create_dentry = NULL;
+	create_dentry = (struct dentry *)calloc(1, sizeof(struct dentry));
+	create_dentry->fid = old_lkup_res->dentry->fid;
+	create_dentry->inode = old_lkup_res->dentry->inode;
+	create_dentry->flags = 0;
+	pthread_rwlock_wrlock(&(fs_sb->dirty_list_rwlock));
+	add_dentry_to_dirty_list(create_dentry);
+	pthread_rwlock_unlock(&(fs_sb->dirty_list_rwlock));
+	set_dentry_flag(create_dentry, D_type, FILE_DENTRY);
+	create_dentry->mode = S_IFLNK | 0777;
+	create_dentry->ctime = time(NULL);
+	create_dentry->mtime = time(NULL);
+	create_dentry->atime = time(NULL);
+	create_dentry->uid = getuid();
+	create_dentry->gid = getgid();
+	old_lkup_res->dentry->nlink++;
+
+	char create_key[MAP_KEY_LEN];
+	memset(create_key, '\0', MAP_KEY_LEN);
+	sprintf(create_key, "%d", (int)p_inode);
+	strcat(create_key, MAP_KEY_DELIMIT);
+	strcat(create_key, cur_name);
+	uint64_t addr = (uint64_t) create_dentry;
+	pthread_rwlock_wrlock(&(fs_sb->tree_rwlock));
+	ret = put(&(fs_sb->tree), create_key, addr);
+	pthread_rwlock_unlock(&(fs_sb->tree_rwlock));
+#ifdef FS_DEBUG
+	if (ret == 1) {
+		printf("fs_create, put key = %s, its parent dentry inode = %d in the map!\n", create_key, (int)p_inode);
+	} else {
+		printf("fs_create, this key = %s, with parent inode = %d has already in the map\n", create_key, (int)p_inode);
+	}
+#endif
+
+// link tree
+	len = strlen(newpath);
+	char *val_str = (char *) malloc(len_mount + len + 1);
+	memset(val_str, '\0', len_mount + len + 1);
+	strcpy(val_str, oldpath);
+	//strcpy(val_str, fs_sb->mount_point);
+	//strcat(val_str, old_real_path);
+	addr = (uint64_t) val_str;
+	ret = put(&(fs_sb->link_tree), create_key, addr);
+	ret = SUCCESS;
+#ifdef FS_DEBUG
+	printf("fs_symlink, new link file inode = %d, link val = %s\n", create_dentry->inode, val_str);
+#endif
+out:
+	free(lkup_res);
+	free(old_lkup_res);
+	lkup_res = NULL;
+	old_lkup_res = NULL;
+	return ret;
+}
+
+int fs_symlink_old(const char * oldpath, const char * newpath)
 {
 	int ret = 0;
 	int i, j;
@@ -1601,6 +1728,63 @@ out:
 }
 
 int fs_readlink(const char * path, char * buf, size_t size)
+{
+	int ret = 0;
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *) malloc(sizeof(struct lookup_res));
+	ret = path_lookup(path, lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+	if (!S_ISLNK(dentry->mode)) {
+		ret = EINVAL;
+		goto out;
+	}
+
+	int i, j;
+	char cur_name[DENTRY_NAME_SIZE];
+	memset(cur_name, '\0', DENTRY_NAME_SIZE);
+	int split_pos = 0;
+	for (i = strlen(path) - 1; i >= 0; --i) {
+		if (path[i] == '/')
+			break;
+	}
+	split_pos = (i > 0) ? i : 1;
+	if (split_pos == 1)
+		memcpy(cur_name, &path[split_pos], strlen(path) - split_pos);
+	else
+		memcpy(cur_name, &path[split_pos + 1], strlen(path) - split_pos - 1);
+
+	char find_key[MAP_KEY_LEN];
+	memset(find_key, '\0', MAP_PRE_KEY_LEN);
+	sprintf(find_key, "%d", (int)lkup_res->p_inode);
+	strcat(find_key, MAP_KEY_DELIMIT);
+	strcat(find_key, cur_name);
+
+	map_t *node;
+	node = get(&(fs_sb->link_tree), find_key);
+	uint64_t addr;
+	addr = node->val;
+	char *val = NULL;
+	val = (char *) addr;
+#ifdef FS_DEBUG
+	printf("fs_readlink, find key = %s, val = %s\n", find_key, val);
+#endif
+	strcpy(buf, val);
+	//sprintf(buf, "%d", (int)dentry->inode);
+#ifdef FS_DEBUG
+	printf("fs_readlink, buf = %s\n", buf);
+#endif
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;
+}
+
+int fs_readlink_old(const char * path, char * buf, size_t size)
 {
 	int ret = 0;
 	struct dentry *dentry = NULL;

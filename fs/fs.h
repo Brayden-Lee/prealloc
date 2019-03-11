@@ -77,6 +77,7 @@ struct fs_super {
 	struct unused_dentry *unused_dentry_head;
 	struct unused_dentry *unused_dentry_tail;
 	root_t tree;
+	root_t link_tree;
 	uint32_t curr_dir_id;
 	pthread_mutex_t dir_id_lock;
 	pthread_rwlock_t dirty_list_rwlock;
