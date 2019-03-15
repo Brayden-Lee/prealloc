@@ -16,13 +16,13 @@
 #define PRE_LOC_NUM 1000
 #define EACH_SUBDIR 13
 #define MAX_COUNT_LIMIT 1010
-#define PATH_LEN 128
-#define DENTRY_NAME_SIZE 80
+#define PATH_LEN 225
+#define DENTRY_NAME_SIZE 128
 #define ALLOCATED_PATH "pre_alloc"
 
 // map config
 #define MAP_KEY_DELIMIT "#"
-#define MAP_KEY_LEN 80
+#define MAP_KEY_LEN 128
 #define MAP_PRE_KEY_LEN 10    // inode +'#'
 
 
@@ -83,6 +83,7 @@ struct fs_super {
 	pthread_rwlock_t dirty_list_rwlock;
 	pthread_rwlock_t unused_list_rwlock;
 	pthread_rwlock_t tree_rwlock;
+	pthread_rwlock_t link_tree_rwlock;
 };
 
 enum dentryflags {

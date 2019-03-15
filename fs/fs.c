@@ -446,6 +446,7 @@ void init_lock()
 	pthread_rwlock_init(&(fs_sb->dirty_list_rwlock), NULL);
 	pthread_rwlock_init(&(fs_sb->unused_list_rwlock), NULL);
 	pthread_rwlock_init(&(fs_sb->tree_rwlock), NULL);
+	pthread_rwlock_init(&(fs_sb->link_tree_rwlock), NULL);
 }
 
 void destroy_lock()
@@ -454,6 +455,7 @@ void destroy_lock()
 	pthread_rwlock_destroy(&(fs_sb->dirty_list_rwlock));
 	pthread_rwlock_destroy(&(fs_sb->unused_list_rwlock));
 	pthread_rwlock_destroy(&(fs_sb->tree_rwlock));
+	pthread_rwlock_destroy(&(fs_sb->link_tree_rwlock));
 }
 
 void fs_init(char * mount_point, char * access_point)
@@ -1304,7 +1306,8 @@ int fs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_
 #ifdef FS_DEBUG
 	printf("fs_read, read %d data from fd = %d in path = %s\n", ret, fd, path);
 #endif
-	offset += size;
+	//if (ret > 0)
+	//	offset += ret;
 	return ret;
 }
 
@@ -1323,8 +1326,10 @@ int fs_write(const char *path, const char *buf, size_t size, off_t offset, struc
 #ifdef FS_DEBUG
 	printf("fs_write, write %d data from fd = %d in path = %s\n", ret, fd, path);
 #endif
-	dentry->size += size;
-	offset += size;
+	if (ret > 0) {
+		dentry->size += ret;
+		//offset += ret;
+	}
 	return ret;
 }
 
@@ -1439,8 +1444,12 @@ int fs_unlink(const char * path)
 	remove_dentry_from_dirty_list(dentry);
 	pthread_rwlock_unlock(&(fs_sb->dirty_list_rwlock));
 	if ((dentry->flags & S_IFLNK) == 1) {
+		pthread_rwlock_rdlock(&(fs_sb->link_tree_rwlock));
 		rm_node = get(&(fs_sb->link_tree), rm_key);
+		pthread_rwlock_unlock(&(fs_sb->link_tree_rwlock));
+		pthread_rwlock_wrlock(&(fs_sb->link_tree_rwlock));
 		del(&(fs_sb->link_tree), rm_node);
+		pthread_rwlock_unlock(&(fs_sb->link_tree_rwlock));
 		free(dentry);
 		dentry = NULL;
 		ret = SUCCESS;
@@ -1489,7 +1498,26 @@ out:
 
 int fs_chown(const char * path, uid_t owner, gid_t group)
 {
-	return -ENOSYS;
+	int ret = 0;
+	struct dentry *dentry = NULL;
+	struct lookup_res *lkup_res = NULL;
+	lkup_res = (struct lookup_res *)malloc(sizeof(struct lookup_res));
+	ret = path_lookup(path, lkup_res);
+	if (ret == ERROR) {
+		ret = -ENOENT;
+		goto out;
+	}
+	dentry = lkup_res->dentry;
+#ifdef FS_DEBUG
+	printf("fs_chown, chown path = %s, its inode = %d\n", path, (int)dentry->inode);
+#endif
+	dentry->uid = owner;
+	dentry->gid = group;
+	ret = 0;
+out:
+	free(lkup_res);
+	lkup_res = NULL;
+	return ret;	
 }
 
 int fs_access(const char * path, int amode)
@@ -1611,7 +1639,9 @@ int fs_symlink(const char *oldpath, const char *newpath)
 	//strcpy(val_str, fs_sb->mount_point);
 	//strcat(val_str, old_real_path);
 	addr = (uint64_t) val_str;
+	pthread_rwlock_wrlock(&(fs_sb->link_tree_rwlock));
 	ret = put(&(fs_sb->link_tree), create_key, addr);
+	pthread_rwlock_unlock(&(fs_sb->link_tree_rwlock));
 	ret = SUCCESS;
 #ifdef FS_DEBUG
 	printf("fs_symlink, new link file inode = %d, link val = %s\n", create_dentry->inode, val_str);
@@ -1765,7 +1795,9 @@ int fs_readlink(const char * path, char * buf, size_t size)
 	strcat(find_key, cur_name);
 
 	map_t *node;
+	pthread_rwlock_rdlock(&(fs_sb->link_tree_rwlock));
 	node = get(&(fs_sb->link_tree), find_key);
+	pthread_rwlock_unlock(&(fs_sb->link_tree_rwlock));
 	uint64_t addr;
 	addr = node->val;
 	char *val = NULL;
